@@ -1,5 +1,6 @@
 _workspace/
 reference/
+!docs/reference/
 node_modules/
 dist/
 build/
