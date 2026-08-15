@@ -1,0 +1,12 @@
+{
+  "root": true,
+  "ignorePatterns": [
+    "dist/",
+    "release/",
+    "log/",
+    "node_modules/",
+    "_workspace/",
+    "docs/",
+    "distribution/"
+  ]
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NEON GRID ARCADE</title>
+    <!--
+      외부 폰트 CDN은 두지 않는다. 운영 기기는 네트워크가 없는 오프라인 키오스크다 (§1.4).
+      폰트 자산 로컬 번들 정책은 WU-07(§17.6)에서 확정한다.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #05070f;
+        height: 100%;
+        overflow: hidden;
+      }
+      #game {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

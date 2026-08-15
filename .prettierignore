@@ -1,0 +1,14 @@
+# 기획서·하네스 기록·배포 자료는 포맷 대상이 아니다.
+# docs/는 이 유닛에서 수정 금지 대상이므로 반드시 제외한다 (작업 계획 §10.1-2).
+docs/
+_workspace/
+distribution/
+
+# 빌드·런타임 산출물
+dist/
+release/
+log/
+node_modules/
+
+# 문서 파일 전체 (README.md · CLAUDE.md 포함)
+*.md

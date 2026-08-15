@@ -3,6 +3,8 @@ reference/
 node_modules/
 dist/
 build/
+release/
+log/
 *.zip
 .env
 .env.*
