@@ -1,12 +1,12 @@
-// 입력 어댑터 (§2.1 추상 입력 10종 · §2.2 개발 키 매핑 · §2.3 반복 · §18.5 어댑터 상태)
+// 입력 어댑터 (§2.1 추상 입력 10종·개발 키 · §2.5 홀드 반복 · §17 [보류] Serial I/O)
 //
 // 구조
 //   InputStateMachine — DOM을 모르는 순수 상태기계. 반복·3상태·구독을 전부 여기서 처리한다.
 //   KeyboardInputAdapter — 키 이벤트 타깃에 붙는 개발용 구현체.
-//   InputAdapter — 나중에 SerialInputAdapter를 끼우기 위한 계약 (§18.5 · §13 G2)
+//   InputAdapter — 나중에 SerialInputAdapter를 끼우기 위한 계약
 //
-// Serial I/O 실물 연동은 부록 B [보류]다. WU-01은 어댑터 인터페이스와 3상태까지만 만들고
-// 실제 패킷·펄스 상수는 Serial 구현체 안 1곳에서 교체한다 (§18.5).
+// Serial I/O 실물 연동은 §17 [보류] #1이다. WU-01은 어댑터 인터페이스와 3상태까지만 만들고
+// 실제 패킷·펄스 상수는 Serial 구현체 안 1곳에서 교체한다.
 
 import type { InputAction, PlayerId } from '../core/types';
 
@@ -15,21 +15,21 @@ export interface PlayerAction {
   action: InputAction;
 }
 
-/** 어댑터 상태 3종 (§18.5 · §9.6 진단 화면) */
+/** 어댑터 상태 3종 (§11.7 진단) */
 export type InputStatus = 'connected' | 'disconnected' | 'stuck';
 
-/** §2.3 — 방향 입력 홀드 시 연속 이동 시작까지의 지연 */
+/** §2.5 — 레버 홀드 시 연속 이동 시작까지의 지연 */
 export const REPEAT_DELAY_MS = 250;
-/** §2.3 — 연속 이동 반복 간격 */
+/** §2.5 — 연속 이동 반복 간격 */
 export const REPEAT_INTERVAL_MS = 100;
-/** §18.5 · §9.6 — 같은 입력이 이 시간 이상 유지되면 고착(stuck)으로 본다 */
+/** §2.5 · §11.7 — 같은 입력이 이 시간 이상 유지되면 고착(stuck)으로 본다 */
 export const STUCK_HOLD_MS = 5000;
 
-/** 반복은 방향 4종에만 적용한다 (§2.3) */
+/** 반복은 레버 4방향에만 적용한다 (§2.5) */
 const DIRECTIONS: readonly InputAction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
 
-/** 코인·관리자·데일리는 "아무 키나 누르면 시작" 판정에서 제외한다 (§2.5) */
-const ANY_KEY_EXCLUDED: readonly InputAction[] = ['COIN', 'ADMIN', 'DAILY'];
+/** 코인·SERVICE·예약 슬롯은 "아무 키나 누르면 시작" 판정에서 제외한다 (§2.7) */
+const ANY_KEY_EXCLUDED: readonly InputAction[] = ['COIN', 'SERVICE', 'RESERVED'];
 
 // ── 주입 지점 ──────────────────────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ export const systemTimers: InputTimers = {
 
 /**
  * 키 이벤트의 최소 형태. 실제 `KeyboardEvent`가 이 형태를 만족하므로 DOM 없이도
- * 같은 코드로 테스트할 수 있다 (§2.2 `e.code` 우선 · `e.key` 폴백).
+ * 같은 코드로 테스트할 수 있다 (§2.1 `e.code` 우선 · `e.key` 폴백).
  */
 export interface KeyEventLike {
   code?: string;
@@ -75,61 +75,65 @@ export interface KeyEventTarget {
   removeEventListener(type: string, listener: (event: KeyEventLike) => void): void;
 }
 
-// ── §2.2 개발 키보드 대응표 ────────────────────────────────────────────────
+// ── §2.1 개발 키보드 대응표 ────────────────────────────────────────────────
 
 export interface KeyMap {
   [code: string]: PlayerAction;
 }
 
 /**
- * §2.2 표 1~10행. P1 `W/A/S/D`+`G`+`H`+`F1`, P2 `Numpad 8/4/5/6`+`K`+`L`+`F2`,
- * 공통 `F10`(코인)·`F9`(관리자)·`P`(데일리).
+ * §2.1 표 1~9행. P1 `W/A/S/D` + `H`(BUTTON1 당기기) + `G`(BUTTON2 힌트) + `F1`,
+ * P2 `Numpad 8/4/5/6` + `L`(BUTTON1) + `K`(BUTTON2) + `F2`, 공통 `F10`(코인)·`F9`(SERVICE).
  *
- * 11행 `Esc`(앱 종료)는 **의도적으로 넣지 않는다.** §13 G8이 키오스크 탈출 경로 제거를
- * 요구하므로 종료는 WU-06의 관리자 3초 홀드가 preload `quit()` 채널로만 수행한다.
+ * 버튼 좌우는 물리 배치를 따른다 — 우측 버튼이 확정·실행(BUTTON1), 좌측 버튼이 보조·취소
+ * (BUTTON2)다 (§2.4). P2 개발 키도 같은 좌우 규칙으로 둔다.
+ *
+ * 10행 `RESERVED`는 `[2차]` 예약 슬롯이라 **어떤 물리 입력에도 연결하지 않는다** (§2.1).
+ * `Esc`(앱 종료)도 **의도적으로 넣지 않는다.** 키오스크 탈출 경로를 두지 않으므로 종료는
+ * 관리자 `SYSTEM ACTIONS`의 홀드 조작이 preload `quit()` 채널로만 수행한다 (§11.7).
+ *
+ * 개발 키 `F9`는 출시 빌드에서 비활성화하고 물리 SERVICE 키만 남긴다 (§2.1 · §17 [보류] #2).
  */
 export const KEYMAP: KeyMap = {
   KeyW: { player: 1, action: 'UP' },
   KeyS: { player: 1, action: 'DOWN' },
   KeyA: { player: 1, action: 'LEFT' },
   KeyD: { player: 1, action: 'RIGHT' },
-  KeyG: { player: 1, action: 'ROTATE' },
-  KeyH: { player: 1, action: 'PLACE' },
+  KeyH: { player: 1, action: 'BUTTON1' },
+  KeyG: { player: 1, action: 'BUTTON2' },
   F1: { player: 1, action: 'START' },
   Numpad8: { player: 2, action: 'UP' },
   Numpad5: { player: 2, action: 'DOWN' },
   Numpad4: { player: 2, action: 'LEFT' },
   Numpad6: { player: 2, action: 'RIGHT' },
-  KeyK: { player: 2, action: 'ROTATE' },
-  KeyL: { player: 2, action: 'PLACE' },
+  KeyL: { player: 2, action: 'BUTTON1' },
+  KeyK: { player: 2, action: 'BUTTON2' },
   F2: { player: 2, action: 'START' },
   F10: { player: 1, action: 'COIN' },
-  F9: { player: 1, action: 'ADMIN' },
-  KeyP: { player: 1, action: 'DAILY' },
+  F9: { player: 1, action: 'SERVICE' },
 };
 
-/** `e.code`가 비어 있는 환경(가상 키보드·자동화) 대비 `e.key` 폴백 (§2.2 · §13 G1) */
+/** `e.code`가 비어 있는 환경(가상 키보드·자동화) 대비 `e.key` 폴백 (§2.1) */
 export const KEYMAP_BY_KEY: KeyMap = {
   w: { player: 1, action: 'UP' },
   s: { player: 1, action: 'DOWN' },
   a: { player: 1, action: 'LEFT' },
   d: { player: 1, action: 'RIGHT' },
-  g: { player: 1, action: 'ROTATE' },
-  h: { player: 1, action: 'PLACE' },
+  h: { player: 1, action: 'BUTTON1' },
+  g: { player: 1, action: 'BUTTON2' },
   F1: { player: 1, action: 'START' },
   '8': { player: 2, action: 'UP' },
   '5': { player: 2, action: 'DOWN' },
   '4': { player: 2, action: 'LEFT' },
   '6': { player: 2, action: 'RIGHT' },
-  k: { player: 2, action: 'ROTATE' },
-  l: { player: 2, action: 'PLACE' },
+  l: { player: 2, action: 'BUTTON1' },
+  k: { player: 2, action: 'BUTTON2' },
   F2: { player: 2, action: 'START' },
   F10: { player: 1, action: 'COIN' },
-  F9: { player: 1, action: 'ADMIN' },
-  p: { player: 1, action: 'DAILY' },
+  F9: { player: 1, action: 'SERVICE' },
 };
 
-/** `e.code` 우선 조회, 비어 있으면 `e.key` 폴백. 표에 없는 키는 undefined다 (§2.2 · §13 G1) */
+/** `e.code` 우선 조회, 비어 있으면 `e.key` 폴백. 표에 없는 키는 undefined다 (§2.1) */
 export function lookup(e: KeyEventLike): PlayerAction | undefined {
   if (e.code) return KEYMAP[e.code];
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -155,10 +159,10 @@ interface RepeatTimers {
 /**
  * DOM을 모르는 입력 상태기계.
  *
- * - 방향 4종: 즉시 1회 → 250ms 후 → 100ms 간격 (§2.3)
- * - 회전·배치·START: keydown 1회당 1발화, OS 키 리피트 무시 (§2.3)
- * - `releaseAll()`(창 blur)에서 모든 반복 타이머 즉시 해제 (§2.3)
- * - 3상태: connected / disconnected / stuck (§18.5)
+ * - 레버 4방향: 즉시 1회 → 250ms 후 → 100ms 간격 (§2.5)
+ * - 버튼 2종·START: keydown 1회당 1발화, OS 키 리피트 무시 (§2.5)
+ * - `releaseAll()`(창 blur)에서 모든 반복 타이머 즉시 해제 (§2.5)
+ * - 3상태: connected / disconnected / stuck (§11.7)
  */
 export class InputStateMachine {
   private actionListeners: ActionListener[] = [];
@@ -183,7 +187,7 @@ export class InputStateMachine {
     };
   }
 
-  /** "아무 키" 시작 입력 — 코인·관리자·데일리 키는 제외된다 (§2.5) */
+  /** "아무 키" 시작 입력 — 코인·SERVICE·예약 슬롯은 제외된다 (§2.7) */
   onAnyKey(fn: AnyKeyListener): () => void {
     this.anyKeyListeners.push(fn);
     return () => {

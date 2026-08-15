@@ -88,7 +88,7 @@ describe('5-8 백엔드 3종 왕복 (§9.2)', () => {
     await expect(make().read(FILES.stats)).resolves.toBeNull();
   });
 
-  it('localStorage 백엔드는 neongrid: 접두사를 쓴다', async () => {
+  it('localStorage 백엔드는 arrowout: 접두사를 쓴다', async () => {
     const store = new FakeLocalStorage();
     await localStorageBackend(store).write(FILES.stats, 'v');
     expect([...store.map.keys()]).toEqual([`${STORAGE_PREFIX}${FILES.stats}`]);
@@ -300,7 +300,7 @@ describe('저장 대상 문서 등록 API (§9.2 부팅 시 로드 → 저장)',
   it('같은 파일을 두 번 등록할 수 없다', () => {
     const storage = new Storage({ env: {} });
     const doc: SaveDocument = {
-      file: FILES.stages,
+      file: FILES.params,
       serialize: () => '',
       apply: () => undefined,
     };

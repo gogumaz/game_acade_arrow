@@ -262,7 +262,7 @@ describe('4-6 단일 직렬 큐 (§9.3)', () => {
 // ── 4-7 파일명 검증 ───────────────────────────────────────────────────────
 
 describe('4-7 파일명 검증 — 경로 탈출 방지 (§9.3)', () => {
-  it.each(['settings.csv', 'stages.csv', 'credit_log.csv', 'error_2026-08-15.log', 'a-b_c.1'])(
+  it.each(['settings.csv', 'params.csv', 'credit_log.csv', 'error_2026-08-15.log', 'a-b_c.1'])(
     '%s는 허용된다',
     (name) => {
       expect(sanitizeName(name)).toBe(name);
@@ -297,7 +297,7 @@ describe('4-3 · 4-8 실파일 왕복과 저장 경로 (§9.1 · SAV-001)', () =
   let dir = '';
 
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(tmpdir(), 'neongrid-wu01-'));
+    dir = await mkdtemp(path.join(tmpdir(), 'arrowout-wu01-'));
   });
 
   afterEach(async () => {
@@ -353,7 +353,7 @@ describe('4-11 credit_log.csv append (§9.1)', () => {
   let dir = '';
 
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(tmpdir(), 'neongrid-wu01-'));
+    dir = await mkdtemp(path.join(tmpdir(), 'arrowout-wu01-'));
   });
 
   afterEach(async () => {

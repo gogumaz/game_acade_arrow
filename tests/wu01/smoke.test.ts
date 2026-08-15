@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { INPUT_ACTIONS } from '../../src/core/types';
+import { GAME_TITLE, INPUT_ACTIONS } from '../../src/core/types';
 import {
   KEYMAP,
   KeyboardInputAdapter,
@@ -31,19 +31,18 @@ import {
 } from '../../src/game/input';
 import { createSafeWriter } from '../../electron/safe-write.cjs';
 import {
+  APPEND_ONLY_FILES,
+  CODEC_FILES,
   CREDIT_LOG_HEADER,
   FILES,
   type CreditLogRecord,
   type SettingsRecord,
-  type StageRecord,
   type StatsRecord,
   creditLogLine,
   parseCreditLogLine,
   parseSettingsCsv,
-  parseStagesCsv,
   parseStatsCsv,
   settingsToCsv,
-  stagesToCsv,
   statsToCsv,
 } from '../../src/persist/csv';
 import {
@@ -90,12 +89,13 @@ describe('WU-01 스모크 ① 입력 어댑터 (§2.1 · §18.5)', () => {
     vi.useRealTimers();
   });
 
-  it('추상 입력 10종과 §2.2 키맵이 살아 있다', () => {
+  it('추상 입력 10종과 §2.1 키맵이 살아 있다', () => {
     expect(INPUT_ACTIONS).toHaveLength(10);
-    expect(Object.keys(KEYMAP)).toHaveLength(17); // P1·P2 7행 ×2 + 공통 3
+    expect(Object.keys(KEYMAP)).toHaveLength(16); // P1·P2 7행 ×2 + 공통 2 (RESERVED는 키 없음)
     expect(lookup({ code: 'KeyW', key: '' })).toEqual({ player: 1, action: 'UP' });
-    expect(lookup({ code: '', key: 'l' })).toEqual({ player: 2, action: 'PLACE' });
-    expect(lookup({ code: 'Escape', key: 'Escape' })).toBeUndefined(); // §13 G8
+    expect(lookup({ code: 'KeyH', key: '' })).toEqual({ player: 1, action: 'BUTTON1' });
+    expect(lookup({ code: '', key: 'l' })).toEqual({ player: 2, action: 'BUTTON1' });
+    expect(lookup({ code: 'Escape', key: 'Escape' })).toBeUndefined(); // 키오스크 탈출 경로 제거
   });
 
   it('disconnected → connected → stuck → connected → disconnected 전이가 된다', () => {
@@ -147,7 +147,7 @@ describe('WU-01 스모크 ② 안전 쓰기 (§9.3 · SAV-001 · SAV-002)', () =
   let dir = '';
 
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(tmpdir(), 'neongrid-smoke-'));
+    dir = await mkdtemp(path.join(tmpdir(), 'arrowout-smoke-'));
   });
 
   afterEach(async () => {
@@ -256,7 +256,7 @@ describe('WU-01 스모크 ③ 저장 백엔드 3종 (§9.2)', () => {
 // ── ④ CSV 왕복 ───────────────────────────────────────────────────────────
 
 describe('WU-01 스모크 ④ CSV 왕복 (§9.1)', () => {
-  it('확정 4종 코덱이 왕복한다', () => {
+  it('확정 3종 코덱이 왕복한다', () => {
     const settings: SettingsRecord = { soundVolume: 80, coinsPerPlay: 1, initialHearts: 3 };
     expect(parseSettingsCsv(settingsToCsv(settings))).toEqual(settings);
 
@@ -274,21 +274,6 @@ describe('WU-01 스모크 ④ CSV 왕복 (§9.1)', () => {
     };
     expect(parseStatsCsv(statsToCsv(stats))).toEqual(stats);
 
-    const stage: StageRecord = {
-      name: 'STAGE 1',
-      soloGoal: 8,
-      coopGoal: 15,
-      timeSec: 20,
-      startCamera: 0,
-      scoreMultiplier: 1,
-      clearBonus: 1000,
-      hurryEvery: 0,
-      initialMap: [],
-    };
-    const parsed = parseStagesCsv(stagesToCsv([stage], 4), { dataVersion: 4, stageCount: 1 });
-    expect(parsed.discarded).toBe(false);
-    expect(parsed.entries[0].stage).toEqual(stage);
-
     const credit: CreditLogRecord = {
       timestamp: '2026-08-15T09:00:00.000Z',
       action: 'coin_insert',
@@ -301,31 +286,20 @@ describe('WU-01 스모크 ④ CSV 왕복 (§9.1)', () => {
 
   it('사양이 수치로 확정한 상수는 리터럴로 고정된다', () => {
     // 전용 테스트들이 상수 기준 상대 계산을 쓰므로, 사양값 자체는 여기서 고정한다.
-    expect(STUCK_HOLD_MS).toBe(5000); // §8.8.1 "5초 이상" · MNT-001
-    expect(SAVE_DEBOUNCE_MS).toBe(800); // §9.2 변경 시 800ms 디바운스
-    expect(LOG_KEEP_LINES).toBe(2000); // §9.2 localStorage 로그 최근 2000줄
-    expect(STORAGE_PREFIX).toBe('neongrid:'); // §9.2 브라우저 저장 접두사
+    expect(STUCK_HOLD_MS).toBe(5000); // §2.5 "5초 이상" 고착 판정
+    expect(SAVE_DEBOUNCE_MS).toBe(800); // 변경 시 800ms 디바운스
+    expect(LOG_KEEP_LINES).toBe(2000); // localStorage 로그 최근 2000줄
+    expect(STORAGE_PREFIX).toBe('arrowout:'); // §12.1 브라우저 저장 접두사
+    expect(GAME_TITLE).toBe('ARROW OUT'); // §16.4 이름은 설정 상수 1곳
   });
 
-  it('dataVersion이 다르면 저장분을 전량 폐기한다 (SAV-006)', () => {
-    const csv = stagesToCsv(
-      [
-        {
-          name: 'OLD',
-          soloGoal: 8,
-          coopGoal: 15,
-          timeSec: 20,
-          startCamera: 0,
-          scoreMultiplier: 1,
-          clearBonus: 1000,
-          hurryEvery: 0,
-          initialMap: [],
-        },
-      ],
-      3
-    );
-    const result = parseStagesCsv(csv, { dataVersion: 4 });
-    expect(result.discarded).toBe(true);
-    expect(result.entries).toEqual([]);
+  it('params·ranking 파일명 상수가 예약돼 있다 (§12.1)', () => {
+    // 스키마는 WU-05·WU-06 소관이다. 이 스모크는 "파일명만 예약된 상태"를 회귀로 지킨다.
+    expect(FILES.params).toBe('params.csv');
+    expect(FILES.ranking).toBe('ranking.csv');
+    for (const file of [FILES.params, FILES.ranking]) {
+      expect(CODEC_FILES).not.toContain(file);
+      expect(APPEND_ONLY_FILES).not.toContain(file);
+    }
   });
 });

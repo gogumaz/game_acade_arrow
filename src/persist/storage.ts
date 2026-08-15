@@ -31,8 +31,8 @@ export interface StorageBackend {
   append(name: string, line: string): Promise<void>;
 }
 
-/** localStorage 키 접두사 (§9.2) */
-export const STORAGE_PREFIX = 'neongrid:';
+/** localStorage 키 접두사 (§12.1 개발 모드 localStorage) */
+export const STORAGE_PREFIX = 'arrowout:';
 /** localStorage 로그 보존 줄 수 — 헤더 제외 최근 N줄 (§9.2) */
 export const LOG_KEEP_LINES = 2000;
 /** 변경 후 저장까지의 디바운스 (§9.2 · SAV-003) */
@@ -72,7 +72,7 @@ export function electronBackend(fs: GameFs): StorageBackend {
   };
 }
 
-/** 브라우저 개발 모드 — 접두사 `neongrid:`, 로그는 최근 2000줄 유지 */
+/** 브라우저 개발 모드 — 접두사 `arrowout:`, 로그는 최근 2000줄 유지 (§12.1) */
 export function localStorageBackend(store: KeyValueStore): StorageBackend {
   const key = (n: string): string => `${STORAGE_PREFIX}${n}`;
   return {
@@ -140,7 +140,7 @@ export function browserEnvironment(): BackendEnvironment {
 // ── 저장 대상 문서 등록 + 디바운스 저장 ───────────────────────────────────
 
 /**
- * 저장 대상 1건. 나중 유닛(`core/settings` · `core/stats` · `core/stages`)이
+ * 저장 대상 1건. 나중 유닛(`core/settings` · `core/stats` · `core/params`)이
  * 자기 상태를 이 형태로 등록한다. 저장 계층은 도메인을 모른다.
  */
 export interface SaveDocument {

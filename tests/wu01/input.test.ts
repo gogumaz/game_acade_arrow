@@ -73,12 +73,12 @@ describe('3-1 추상 입력 10종 (§2.1)', () => {
       'DOWN',
       'LEFT',
       'RIGHT',
-      'ROTATE',
-      'PLACE',
+      'BUTTON1',
+      'BUTTON2',
       'START',
       'COIN',
-      'ADMIN',
-      'DAILY',
+      'SERVICE',
+      'RESERVED',
     ]);
     expect(new Set(INPUT_ACTIONS).size).toBe(10);
   });
@@ -96,7 +96,10 @@ describe('3-1 추상 입력 10종 (§2.1)', () => {
 
 // ── 3-2 · 3-3 ─────────────────────────────────────────────────────────────
 
-/** §2.2 표 1~10행. 11행 `Esc`(앱 종료)는 §13 G8·D-7에 따라 매핑하지 않는다 */
+/**
+ * §2.1 표 1~9행. 10행 `RESERVED`는 어떤 물리 입력에도 연결하지 않으므로 이 표에 없다.
+ * `Esc`(앱 종료)도 매핑하지 않는다 — 키오스크 탈출 경로를 두지 않는다.
+ */
 const SPEC_TABLE: {
   row: number;
   label: string;
@@ -136,26 +139,25 @@ const SPEC_TABLE: {
   },
   {
     row: 5,
-    label: '회전(CW)',
-    action: 'ROTATE',
-    p1Code: 'KeyG',
-    p1Key: 'g',
-    p2Code: 'KeyK',
-    p2Key: 'k',
-  },
-  {
-    row: 6,
-    label: '배치',
-    action: 'PLACE',
+    label: '당기기(우측 버튼)',
+    action: 'BUTTON1',
     p1Code: 'KeyH',
     p1Key: 'h',
     p2Code: 'KeyL',
     p2Key: 'l',
   },
+  {
+    row: 6,
+    label: '힌트(좌측 버튼)',
+    action: 'BUTTON2',
+    p1Code: 'KeyG',
+    p1Key: 'g',
+    p2Code: 'KeyK',
+    p2Key: 'k',
+  },
   { row: 7, label: 'START', action: 'START', p1Code: 'F1', p1Key: 'F1', p2Code: 'F2', p2Key: 'F2' },
   { row: 8, label: '코인 투입', action: 'COIN', p1Code: 'F10', p1Key: 'F10' },
-  { row: 9, label: '관리자 진입', action: 'ADMIN', p1Code: 'F9', p1Key: 'F9' },
-  { row: 10, label: '데일리 퍼즐', action: 'DAILY', p1Code: 'KeyP', p1Key: 'p' },
+  { row: 9, label: 'SERVICE(관리자 진입)', action: 'SERVICE', p1Code: 'F9', p1Key: 'F9' },
 ];
 
 describe('3-2 §2.2 표 매핑 (§13 G1)', () => {
@@ -166,7 +168,7 @@ describe('3-2 §2.2 표 매핑 (§13 G1)', () => {
     }
   });
 
-  it('표 1~10행이 어댑터에서 실제 액션으로 발화한다', () => {
+  it('표 1~9행이 어댑터에서 실제 액션으로 발화한다', () => {
     const { target, adapter } = attachAdapter();
     const seen: PlayerAction[] = [];
     adapter.onAction((pa) => seen.push(pa));
@@ -197,10 +199,42 @@ describe('3-2 §2.2 표 매핑 (§13 G1)', () => {
     expect(seen).toEqual([]);
   });
 
-  it('11행 Esc(앱 종료)는 매핑하지 않는다 — §13 G8 키오스크 탈출 경로 제거', () => {
+  it('Esc(앱 종료)는 매핑하지 않는다 — 키오스크 탈출 경로 제거', () => {
     expect(lookup({ code: 'Escape', key: 'Escape' })).toBeUndefined();
     expect(KEYMAP.Escape).toBeUndefined();
     expect(KEYMAP_BY_KEY.Escape).toBeUndefined();
+  });
+
+  it('RESERVED는 어떤 물리 키에도 연결되지 않는다 (§2.1 10행)', () => {
+    for (const map of [KEYMAP, KEYMAP_BY_KEY]) {
+      expect(Object.values(map).map((pa) => pa.action)).not.toContain('RESERVED');
+      // P1 7 + P2 7 + 공통 2 = 16. RESERVED에 키를 붙이면 여기서 먼저 깨진다.
+      expect(Object.keys(map)).toHaveLength(16);
+    }
+  });
+
+  it('P2 매핑이 유지되고 어댑터가 player 2로 보고한다 (§1.4 P2 배선 유지)', () => {
+    // P2 입력을 무시하는 것은 게임 계층(WU-03)의 책임이다. 어댑터는 계속 발화하고
+    // 관리자 INPUT TEST가 이 신호를 표시한다 (§11.7).
+    expect(Object.values(KEYMAP).filter((pa) => pa.player === 2)).toHaveLength(7);
+
+    const { target, adapter } = attachAdapter();
+    const seen: PlayerAction[] = [];
+    adapter.onAction((pa) => seen.push(pa));
+
+    for (const code of ['Numpad8', 'Numpad5', 'Numpad4', 'Numpad6', 'KeyL', 'KeyK', 'F2']) {
+      target.emit('keydown', { code, key: '' });
+      target.emit('keyup', { code, key: '' });
+    }
+    expect(seen).toEqual([
+      { player: 2, action: 'UP' },
+      { player: 2, action: 'DOWN' },
+      { player: 2, action: 'LEFT' },
+      { player: 2, action: 'RIGHT' },
+      { player: 2, action: 'BUTTON1' },
+      { player: 2, action: 'BUTTON2' },
+      { player: 2, action: 'START' },
+    ]);
   });
 });
 
@@ -263,12 +297,11 @@ describe('3-4 방향 반복 타이밍 (§2.3)', () => {
       ['KeyS', true],
       ['KeyA', true],
       ['KeyD', true],
-      ['KeyG', false],
       ['KeyH', false],
+      ['KeyG', false],
       ['F1', false],
       ['F10', false],
       ['F9', false],
-      ['KeyP', false],
     ] as [string, boolean][]) {
       const { target, adapter } = attachAdapter();
       const seen: PlayerAction[] = [];
@@ -282,7 +315,7 @@ describe('3-4 방향 반복 타이밍 (§2.3)', () => {
 });
 
 describe('3-5 버튼은 홀드해도 1회만 (§2.3)', () => {
-  it.each(['KeyG', 'KeyH', 'F1', 'KeyK', 'KeyL', 'F2'])(
+  it.each(['KeyH', 'KeyG', 'F1', 'KeyL', 'KeyK', 'F2'])(
     '%s는 OS 키 리피트를 무시하고 1회만 발화한다',
     (code) => {
       const { target, adapter } = attachAdapter();
@@ -346,12 +379,12 @@ describe('3-6 blur에서 반복 타이머 즉시 해제 (§2.3 · §13 G1)', () 
 // ── 3-7 ───────────────────────────────────────────────────────────────────
 
 describe('3-7 "아무 키" 판정 제외 (§2.5)', () => {
-  it('COIN·ADMIN·DAILY는 아무 키 리스너를 호출하지 않는다', () => {
+  it('COIN·SERVICE는 아무 키 리스너를 호출하지 않는다', () => {
     const { target, adapter } = attachAdapter();
     let anyKey = 0;
     adapter.onAnyKey(() => anyKey++);
 
-    for (const code of ['F10', 'F9', 'KeyP']) {
+    for (const code of ['F10', 'F9']) {
       target.emit('keydown', { code, key: '' });
       target.emit('keyup', { code, key: '' });
     }
@@ -533,9 +566,9 @@ describe('3-10 어댑터 인터페이스 분리 (§18.5 · §13 G2)', () => {
     const seen: PlayerAction[] = [];
     adapter.onAction((pa) => seen.push(pa));
     adapter.attach();
-    adapter.signal({ player: 1, action: 'ADMIN' });
+    adapter.signal({ player: 1, action: 'SERVICE' });
     expect(adapter.status).toBe('connected');
-    expect(seen).toEqual([{ player: 1, action: 'ADMIN' }]);
+    expect(seen).toEqual([{ player: 1, action: 'SERVICE' }]);
   });
 
   it('타이머를 주입하면 전역 타이머를 쓰지 않는다', () => {
