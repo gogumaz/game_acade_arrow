@@ -69,6 +69,13 @@ ipcMain.handle('app:quit', () => {
   app.quit();
 });
 
+// 관리자 `SYSTEM ACTIONS > RESTART GAME`(H 2초). 저장 완료 뒤 앱만 다시 띄운다 (admin §10.6).
+// 기기 재부팅·종료는 OS 권한 구성이 필요해 `[보류]`다 (§17 #3).
+ipcMain.handle('app:restart', () => {
+  app.relaunch();
+  app.exit(0);
+});
+
 ipcMain.handle('gamefs:write', (_e, name, content) => storage.write(name, String(content)));
 ipcMain.handle('gamefs:read', (_e, name) => storage.read(name));
 ipcMain.handle('gamefs:append', (_e, name, line) => storage.append(name, line));

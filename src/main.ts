@@ -6,8 +6,9 @@
 
 import Phaser from 'phaser';
 import { APP_REGISTRY_KEY, createApp } from './game/app';
+import { keyboard } from './game/input';
 import { PALETTE } from './game/render/boardView';
-import { AdminStubScene } from './scenes/AdminStubScene';
+import { AdminScene } from './scenes/AdminScene';
 import { AttractScene } from './scenes/AttractScene';
 import { BootScene } from './scenes/BootScene';
 import { ContinueScene } from './scenes/ContinueScene';
@@ -34,13 +35,29 @@ const game = new Phaser.Game({
     ContinueScene,
     ResultScene,
     NameEntryScene,
-    AdminStubScene,
+    AdminScene,
   ],
 });
 
+// ADM-003 — 개발 플래그가 없으면 `F9`로 관리자에 들어갈 수 없다. 출시 기기는 물리 SERVICE 키만
+keyboard.setServiceKeyEnabled(import.meta.env.DEV);
+
+/** §17 `[보류]` #3 — REBOOT·SHUTDOWN은 OS 권한 구성이 필요해 보류를 돌려준다 (WU-06) */
+const gameFS = (globalThis as { gameFS?: { restart?: () => Promise<void> } }).gameFS;
+
 // 씬은 이 값을 레지스트리에서 읽는다. `Phaser.Game` 생성 직후는 아직 부팅 전이라
 // Boot 씬의 create()보다 먼저 실행된다.
-const app = createApp();
+const app = createApp({
+  system: {
+    restart: async (): Promise<string> => {
+      if (gameFS?.restart === undefined) return '[보류]';
+      await gameFS.restart();
+      return 'ok';
+    },
+    reboot: () => Promise.resolve('[보류]'),
+    shutdown: () => Promise.resolve('[보류]'),
+  },
+});
 game.registry.set(APP_REGISTRY_KEY, app);
 
 // 개발 검증용 훅 (프로덕션 빌드 제외)

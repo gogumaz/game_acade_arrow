@@ -128,6 +128,7 @@ WU-01~08 전부 완료 ──► WU-09 1차 통합 인수 ──► (1차 완료
 | WU-02 퍼즐 코어 | **완료** (2026-08-15) — 독립 검증 PASS. `src/core/{params,grid,chain,puzzle,score,session}.ts`, 신규 259 tests(총 441), PZL/SES/SCR 코어분 인수 항목 전량 매핑, 돌연변이 3종 검출. 기획서 정합 수정 5곳(§3.3·§5.3·§5.4·PZL-106·SCR-305) |
 | WU-03 조작·씬 | **완료** — 독립 검증 FIX 1건(CTL-010 동시 입력 필터 런타임 미배선) 재작업 후 PASS. 순수 로직 13모듈(`src/game/`)+씬 7개, 순환 선택·입력 버퍼·힌트·화면 흐름·랭킹, 855 tests(신규 414), CTL-004 최악 조작 수 6, **키보드 실제 플레이 가능**(증거 15장). 코어 무변경. 이월: `createApp()` 커버리지·`lastChargeSource` 배선·`TickResult.ended` 유실 메모·SES-212 인수 문언 → WU-04/09 |
 | WU-04 크레딧·통계 | **완료** (2026-08-16) — 독립 검증 FIX 1건(원복된 결제의 크래시 마커 잔존 → 이중 보상) 재작업 후 PASS. `src/core/{credits,stats}.ts` + `src/game/{creditsService,statsDoc,crashRecovery}.ts`, CreditsPort 무변경으로 스텁 교체, stats.csv 다중 섹션·credit_log reason 컬럼, 1,087 tests(신규 232), CRD-601~607·SES-208~209 전량, 원장 등식 INV-2 성립. 이월: refund 금액을 호출자 인자에서 취함(V-2)·부팅 전 saveNow 선행 가능(V-3) → WU-05/06, 튜토리얼→런 전환 실패 화면 복구(F-1) → WU-07/09, 랭킹 bestToday UTC/로컬 불일치 → WU-06 |
-| **WU-05 관리자·게임 파라미터** | **다음 단계** — WU-04 의존. admin_page.md 8그룹 재사용 + `GAME PARAMETERS` 신설(저장 시 솔버 게이트는 WU-08 솔버 전까지 범위 검증만) |
-| WU-06~09 | 의존 순서대로 착수 |
+| WU-05 관리자·게임 파라미터 | **완료** (2026-08-16) — 독립 검증 FIX 5건(검증 우회 저장·RESTORE 범위 초과·위험 작업 고착·백업 실패 무시·도달 불가 필드) 재작업 후 PASS(C1~C8). 8그룹 단일 씬 + 선언형 필드 스키마 66행, `AdminParams` 상위 문서(CoreParams 25 불변), 입력 `PhaseSource`로 홀드 판정, SolverGate 포트+가짜 게이트 3종, 감사 로그, 1,658 tests(신규 571). 이월: ADM-402 솔버 판정 → WU-08, ADM-301·306 저장 실체 → WU-06, 2초 홀드 5배 가속 육안 확인 → WU-09, RESTORE의 settings.csv 백업 여부 재검토 → WU-06 |
+| **WU-06 저장·안전장치** | **다음 단계** — WU-05 의존. 저장 실패 UI·`.bak` 회전·치명 오류 재실행·유료 플레이 차단·로그 보존·랭킹 복구 |
+| WU-07~09 | 의존 순서대로 착수 |
 | 기존 자산 | WU-01 코드 재사용 확정 · 테트로미노 기획서는 `docs/_archive/` 보관 |

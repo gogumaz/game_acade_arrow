@@ -7,23 +7,38 @@
 // `performance.now()`·`new Date()`를 직접 부르는 곳도 이 파일뿐이다. 순수 계층은 주입된
 // `Clock`·`WallClock`·`nowIso()`만 본다 (§6.6 재현성 · WU-04 §2.3 바).
 
+import {
+  FACTORY_ADMIN_PARAMS,
+  toCoreParams,
+  type AdminParams,
+  type SolverGate,
+} from '../core/adminParams';
 import { CreditWallet } from '../core/credits';
 import { FACTORY_PARAMS, type CoreParams } from '../core/params';
 import { StatsModel, type AuditEvent, type AuditSink, type WallClock } from '../core/stats';
 import type { Clock } from '../core/types';
 import { FILES } from '../persist/csv';
 import { browserEnvironment, Storage } from '../persist/storage';
-import { fixtureBoardSource, type BoardSource } from './boardSource';
+import { AdminController } from './admin/controller';
+import { AuditLogger } from './admin/audit';
+import { ParamsStore } from './admin/paramsDoc';
+import { stubSolverGate } from './admin/solverGate';
+import { testPlayBoardSource, type TestPlaySpec } from './admin/testPlay';
+import { fixtureBoardSource, type BoardRequest, type BoardSource } from './boardSource';
 import { CrashRecovery, type RecoveryResult } from './crashRecovery';
 import { CreditsService } from './creditsService';
-import { FlowMachine } from './flow';
-import { keyboard } from './input';
+import { FlowMachine, type UiTimings } from './flow';
+import { keyboard, asPhaseSource } from './input';
 import type { InputAdapter } from './input';
 import { RankingStore } from './rankingStore';
+import { SettingsStore } from './settingsDoc';
 import { createSilentSfx, type Sfx } from './sfx';
 import { statsSaveDocument } from './statsDoc';
 
 export const APP_REGISTRY_KEY = 'arrowOutApp';
+
+/** §11.6 — 테스트 플레이를 중단하고 편집 화면으로 돌아가는 `G` 홀드 시간 */
+export const TEST_PLAY_ABORT_HOLD_MS = 2000;
 
 export interface AppContext {
   readonly flow: FlowMachine;
@@ -34,6 +49,10 @@ export interface AppContext {
   readonly storage: Storage;
   readonly sfx: Sfx;
   readonly clock: Clock;
+  /** §11 관리자 페이지 — 8그룹 전 화면의 순수 컨트롤러 (WU-05) */
+  readonly admin: AdminController;
+  readonly params: ParamsStore;
+  readonly settings: SettingsStore;
   /** 부팅 순서(§4.4 · §10.6)가 끝날 때 resolve — 테스트·씬이 기다린다 */
   readonly ready: Promise<BootResult>;
   /** §11.6 관리자 테스트 플레이 — WU-05가 뒤집는다. 플래그 소유는 여기 1곳뿐이다 */
@@ -60,10 +79,21 @@ export interface AppOptions {
   readonly storage?: Storage;
   readonly sfx?: Sfx;
   readonly nowIso?: () => string;
-  /** §11.3 N11a·N11b·N11c — 운영 설정 연결(설정 화면)은 WU-05 */
+  /** §11.3 N11a·N11b·N11c — `MACHINE SETTINGS`가 저장한 값이 부팅 순서에서 덮어쓴다 */
   readonly coinsPerPlay?: number;
   readonly continueCoins?: number;
   readonly coinUnitPrice?: number | null;
+  /**
+   * §11.5 솔버 게이트. 기본은 `stubSolverGate()`(`pending: 'WU-08'`)이고,
+   * **WU-08은 이 인자 1곳만** `realSolverGate(...)`로 바꾸면 ADM-402가 성립한다 (P-7).
+   */
+  readonly solverGate?: SolverGate;
+  /** §17 `[보류]` #3 — 실물 재시작·재부팅·종료 채널 */
+  readonly system?: {
+    restart(): Promise<string>;
+    reboot(): Promise<string>;
+    shutdown(): Promise<string>;
+  };
 }
 
 /** 단조 시계 — `performance.now()`가 없으면 월클럭으로 강등한다 */
@@ -103,6 +133,27 @@ export function createApp(options: AppOptions = {}): AppContext {
   const stats = new StatsModel({ wall, audit });
   const wallet = new CreditWallet();
   const ranking = new RankingStore();
+  const paramsStore = new ParamsStore();
+  const settingsStore = new SettingsStore();
+  // 저장 파일이 없을 때의 기준값은 **호출자가 넘긴 옵션**이다. `storage.init()`이 파일을
+  // 읽으면 그쪽이 이긴다 — 그래서 부팅 뒤 반영이 옵션을 덮어쓰지 않는다
+  paramsStore.set({ ...FACTORY_ADMIN_PARAMS, core: params });
+  settingsStore.set({
+    ...FACTORY_ADMIN_PARAMS.machine,
+    ...(options.coinsPerPlay === undefined ? {} : { coinsPerPlay: options.coinsPerPlay }),
+    ...(options.continueCoins === undefined ? {} : { continueCoins: options.continueCoins }),
+    ...(options.coinUnitPrice === undefined ? {} : { coinUnitPrice: options.coinUnitPrice }),
+  });
+  settingsStore.mirrorInitialHearts(params.initialHearts);
+  // WU-04 P-12가 비워 둔 자리 — 감사 이벤트를 그대로 `audit_log.csv` 1줄로 옮긴다
+  const auditLogger = new AuditLogger({
+    append: (file, line) => {
+      void storage.appendLine(file, line);
+    },
+  });
+  auditListeners.add((e) => {
+    auditLogger.write(e);
+  });
 
   const credits = new CreditsService({
     stats,
@@ -139,11 +190,23 @@ export function createApp(options: AppOptions = {}): AppContext {
 
   storage.register(ranking.asSaveDocument());
   storage.register(statsSaveDocument(stats));
+  storage.register(paramsStore.asSaveDocument());
+  storage.register(settingsStore.asSaveDocument());
+
+  // §11.6 — 테스트 플레이만 보드 공급원을 갈아 끼운다. `FlowMachine`은 이 라우터 1개만 본다
+  const baseBoards = options.boardSource ?? fixtureBoardSource();
+  let boardOverride: BoardSource | null = null;
+  const boards: BoardSource = {
+    next: (req: BoardRequest) => (boardOverride ?? baseBoards).next(req),
+  };
+
+  // 관리자 컨트롤러는 flow보다 나중에 만들어지므로 참조를 지연해서 잡는다
+  let admin: AdminController | null = null;
 
   const flow = new FlowMachine({
     clock,
     credits,
-    boardSource: options.boardSource ?? fixtureBoardSource(),
+    boardSource: boards,
     ranking,
     params,
     sfx,
@@ -153,12 +216,97 @@ export function createApp(options: AppOptions = {}): AppContext {
       credits.closeSession(o);
     },
     isTestPlay: () => testPlay,
+    // Q-1 — §11.4 등급 임계·힌트 시간·이름 입력 시간을 실제 런타임에 반영한다.
+    // 기본값이 공장값이라 관리자가 손대지 않으면 WU-03과 완전히 같이 동작한다
+    gradeThresholds: () => {
+      const g = (admin?.liveParams ?? live()).grade;
+      return { 'S+': g.sPlus, S: g.s, A: g.a, B: g.b };
+    },
+    uiTimings: (): UiTimings => {
+      const ui = (admin?.liveParams ?? live()).ui;
+      return {
+        hintShowMs: Math.round(ui.hintShowSec * 1000),
+        hintCooldownMs: Math.round(ui.hintCooldownSec * 1000),
+        nameEntryMs: Math.round(ui.nameEntrySec * 1000),
+      };
+    },
+    adminInput: (action) => admin?.handle(action),
+    adminIdleGuard: () => admin?.idleGuard() ?? true,
   });
 
+  /** 저장 문서 2종을 합친 현재 라이브 값 */
+  function live(): AdminParams {
+    return { ...paramsStore.live, machine: settingsStore.machine };
+  }
+
+  /** §11.6 — 테스트 플레이로 나가기 전에 있던 관리자 화면. 복귀하면 그 자리로 되돌린다 */
+  let testPlayReturn: readonly string[] | null = null;
+
+  /**
+   * 클리어·런 종료·`G` 2초 홀드 — 세 경로가 전부 여기로 모인다.
+   *
+   * **관리자 화면에서 시작한 테스트 플레이만** 관리자로 되돌린다. `setTestPlay(true)`만 켜고
+   * 직접 런을 돌리는 경로(WU-04 CRD-607)는 예전처럼 `READY`/`ATTRACT`로 나간다.
+   */
+  function finishTestPlay(): void {
+    if (!testPlay || testPlayReturn === null) return;
+    const summary = flow.snapshot().result;
+    admin?.endTestPlay({ score: summary?.score ?? 0, grade: summary?.grade ?? null });
+    flow.abortToAdmin();
+  }
+
   // §10.5 롤오버 3번째 지점(관리자 진입) · §10.6 마커 해제(정상 종료)는 기존 리스너로 얻는다 (P-5)
-  const unwatchScreen = flow.onScreenChange((to) => {
-    if (to === 'ADMIN') credits.noteAdminEntered();
+  const unwatchScreen = flow.onScreenChange((to, from) => {
+    if (to === 'ADMIN') {
+      credits.noteAdminEntered();
+      // 테스트 플레이 복귀는 **작업 사본을 지우지 않는다** — 진입 절차를 다시 밟지 않는다
+      if (testPlayReturn !== null) {
+        admin?.resume(testPlayReturn);
+        testPlayReturn = null;
+      } else {
+        admin?.enter();
+      }
+    }
     if (to === 'RESULT') recovery.clear();
+    // §11.6 — 테스트 런이 끝나면 결과를 관리자에 넘기고 편집 화면으로 되돌린다
+    if (from === 'RESULT' && testPlay) finishTestPlay();
+  });
+
+  admin = new AdminController({
+    clock,
+    nowIso,
+    params: paramsStore,
+    settings: settingsStore,
+    storage,
+    solverGate: options.solverGate ?? stubSolverGate(),
+    credits,
+    ranking,
+    audit,
+    sfx,
+    applyParams: (p) => {
+      flow.applyParams(toCoreParams(p));
+    },
+    leaveAdmin: () => {
+      flow.handle('SERVICE');
+    },
+    inputStatus: () => input.status,
+    ...(options.system === undefined ? {} : { system: options.system }),
+    testPlay: {
+      start: (spec: TestPlaySpec, draft: AdminParams) => {
+        testPlay = true;
+        testPlayReturn = admin?.currentPath ?? [];
+        boardOverride = testPlayBoardSource(baseBoards, spec);
+        flow.applyParams(toCoreParams(draft));
+        flow.handle('SERVICE'); // ADMIN → READY (테스트 플레이는 크레딧 없이 시작할 수 있다)
+        flow.handle('START');
+      },
+      stop: () => {
+        testPlay = false;
+        boardOverride = null;
+        flow.applyParams(toCoreParams(live()));
+      },
+    },
+    runSnapshot: () => flow.snapshot().run,
   });
 
   /**
@@ -168,6 +316,16 @@ export function createApp(options: AppOptions = {}): AppContext {
    */
   const ready: Promise<BootResult> = (async (): Promise<BootResult> => {
     await storage.init();
+    // §11.4 — 저장된 파라미터를 코어·서비스에 반영한다. 여기가 `params.csv` → 런타임의 유일한 통로다
+    const loaded = live();
+    flow.applyParams(toCoreParams(loaded));
+    credits.setCoinsPerPlay(loaded.machine.coinsPerPlay);
+    credits.setContinueCoins(loaded.machine.continueCoins);
+    credits.setCoinUnitPrice(loaded.machine.coinUnitPrice);
+    settingsStore.mirrorInitialHearts(loaded.core.initialHearts);
+    // admin §4.3 `RESTART REQUIRED` — 분포 전환 표본 수는 **부팅에서만** 반영된다
+    stats.setRingCapacity(loaded.grade.sampleThreshold);
+    admin.refreshFromStores();
     const restoredPaid = credits.restorePaidFromLog(await storage.read(FILES.creditLog));
     credits.noteBoot();
     credits.clearEventBalance('boot');
@@ -178,6 +336,25 @@ export function createApp(options: AppOptions = {}): AppContext {
   const input = options.input ?? keyboard;
   input.attach();
   const unsubscribe = input.onAction((pa) => flow.handle(pa.action, pa.player));
+  // P-6 — 누름/뗌 스트림을 **가진 어댑터에서만** 결선한다. 인터페이스는 바뀌지 않았다
+  const phaseSource = asPhaseSource(input);
+  // §11.6 — 테스트 플레이 중 `G`를 2초 유지하면 편집 화면으로 돌아온다.
+  // 런 화면에서는 `BUTTON2`가 힌트라 액션 스트림으로는 구분할 수 없고, 이 홀드 판정이 유일한 길이다
+  let abortHoldFromMs: number | null = null;
+  const unsubscribePhase =
+    phaseSource === null
+      ? null
+      : phaseSource.onPhase((e) => {
+          admin.phase(e);
+          if (e.player !== 1 || e.action !== 'BUTTON2') return;
+          if (e.phase === 'down') {
+            abortHoldFromMs = testPlay && flow.screen !== 'ADMIN' ? clock.now() : null;
+            return;
+          }
+          const from = abortHoldFromMs;
+          abortHoldFromMs = null;
+          if (from !== null && clock.now() - from >= TEST_PLAY_ABORT_HOLD_MS) finishTestPlay();
+        });
 
   return {
     flow,
@@ -188,6 +365,9 @@ export function createApp(options: AppOptions = {}): AppContext {
     storage,
     sfx,
     clock,
+    admin,
+    params: paramsStore,
+    settings: settingsStore,
     ready,
     setTestPlay(on: boolean): void {
       testPlay = on;
@@ -202,6 +382,7 @@ export function createApp(options: AppOptions = {}): AppContext {
     dispose(): void {
       unwatchScreen();
       unsubscribe();
+      unsubscribePhase?.();
       input.detach();
     },
   };

@@ -101,7 +101,11 @@ export type NumericParamKey = Exclude<keyof CoreParams, 'continueEnabled'>;
 
 /** §11.4 조정 범위 1행 */
 export interface ParamRange {
-  /** §11.4 항목명 그대로. WU-05가 이 이름으로 `params.csv`를 만든다 */
+  /**
+   * §11.4 항목명 그대로 — **표시 전용**이다.
+   * `params.csv`의 키는 라벨이 아니라 TS 경로(`core.sessionTimeSec`)다 (WU-05 Q-3):
+   * 라벨은 문구 정비에서 바뀔 수 있고, 바뀌면 저장 데이터가 고아가 된다.
+   */
   readonly label: string;
   readonly min: number;
   readonly max: number;

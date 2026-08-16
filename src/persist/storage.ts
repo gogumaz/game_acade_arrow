@@ -180,6 +180,12 @@ export class Storage {
   private readonly onError: (phase: 'load' | 'save' | 'append', error: unknown) => void;
   private backendRef: StorageBackend;
   private saveTimer: TimerHandle | null = null;
+  /**
+   * 쓰기 실패 누적 횟수. `saveAll`·`saveNow`는 `onError`로 실패를 삼키므로 호출자가
+   * "이번 저장이 성공했는가"를 알 방법이 없었다 — 관리자 `SAVE FAILED` 화면(ADM-302)에
+   * 필요한 유일한 신호다. 호출 전후로 이 값을 비교한다.
+   */
+  private saveFailures = 0;
 
   constructor(options: StorageOptions = {}) {
     this.timers = options.timers ?? systemStorageTimers;
@@ -242,9 +248,15 @@ export class Storage {
       try {
         await this.backendRef.write(doc.file, doc.serialize());
       } catch (err) {
+        this.saveFailures += 1;
         this.onError('save', err);
       }
     }
+  }
+
+  /** 지금까지의 쓰기 실패 횟수 — 호출 전후 비교로 "이번 저장 성공" 여부를 얻는다 */
+  get saveFailureCount(): number {
+    return this.saveFailures;
   }
 
   /** 추가 전용 로그 1줄 (§9.1 크레딧 변동 시 즉시 기록) */
@@ -279,12 +291,36 @@ export class Storage {
     try {
       await this.backendRef.write(doc.file, doc.serialize());
     } catch (err) {
+      this.saveFailures += 1;
       this.onError('save', err);
     }
   }
 
   read(file: SaveFileName): Promise<string | null> {
     return this.backendRef.read(file);
+  }
+
+  /**
+   * 위험 작업 **직전** 스냅샷 (§11.5 · admin §13 "높음" 등급의 백업 요건).
+   * 현재 내용을 그대로 `<파일>.bak`에 옮긴다. 파일이 아직 없으면 남길 것이 없으므로 `false`.
+   *
+   * Electron 안전 쓰기(§12.2)의 `.bak`과 **중복이 아니다** — 브라우저·메모리 백엔드에는
+   * `.tmp/.bak` 절차가 없으므로 백엔드와 무관하게 백업을 보장하는 지점이 필요하다.
+   * 회전 정책·체크섬·복구 판정은 WU-06 소관이다.
+   *
+   * 반환값은 "**다음 단계로 진행해도 되는가**"다. 아직 파일이 없으면 남길 것이 없으므로
+   * `true`이고, 읽기·쓰기가 실패했을 때만 `false`다 (호출자는 그때 저장을 중단한다).
+   */
+  async backup(file: SaveFileName): Promise<boolean> {
+    try {
+      const current = await this.backendRef.read(file);
+      if (current === null) return true;
+      await this.backendRef.write(`${file}.bak`, current);
+      return true;
+    } catch (err) {
+      this.onError('save', err);
+      return false;
+    }
   }
 
   /** 대기 중인 디바운스 저장이 있는지 (테스트·종료 처리용) */

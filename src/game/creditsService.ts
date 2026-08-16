@@ -94,8 +94,13 @@ function clampCost(n: number, fallback: number): number {
 }
 
 export class CreditsService implements CreditsPort {
-  readonly coinsPerPlay: number;
-  readonly continueCoins: number;
+  /**
+   * §11.3 — `COINS PER PLAY`·`CONTINUE COINS`는 관리자 `MACHINE SETTINGS`가 바꾼다.
+   * 반영 시점이 "다음 결제"이므로 진행 중인 결제에 소급되지 않는다. 읽는 쪽(`CreditsPort`의
+   * `readonly` 필드)은 getter로 그대로 충족되므로 `flow.ts` 호출부는 한 줄도 바뀌지 않는다.
+   */
+  private coinsCost: number;
+  private continueCost: number;
 
   private readonly wallet: CreditWallet;
   private readonly stats: StatsModel;
@@ -122,11 +127,8 @@ export class CreditsService implements CreditsPort {
     this.nowIso = deps.nowIso;
     this.appendCreditLog = deps.appendCreditLog;
     this.wallet = deps.wallet ?? new CreditWallet();
-    this.coinsPerPlay = clampCost(
-      deps.coinsPerPlay ?? DEFAULT_COINS_PER_PLAY,
-      DEFAULT_COINS_PER_PLAY
-    );
-    this.continueCoins = clampCost(
+    this.coinsCost = clampCost(deps.coinsPerPlay ?? DEFAULT_COINS_PER_PLAY, DEFAULT_COINS_PER_PLAY);
+    this.continueCost = clampCost(
       deps.continueCoins ?? DEFAULT_CONTINUE_COINS,
       DEFAULT_CONTINUE_COINS
     );
@@ -139,6 +141,26 @@ export class CreditsService implements CreditsPort {
   }
 
   // ── CreditsPort ──────────────────────────────────────────────────────────
+
+  get coinsPerPlay(): number {
+    return this.coinsCost;
+  }
+
+  get continueCoins(): number {
+    return this.continueCost;
+  }
+
+  /** §11.3 N11a — 반영 시점은 **다음 결제**다 (진행 중 세션에 소급되지 않는다) */
+  setCoinsPerPlay(n: number): void {
+    this.coinsCost = clampCost(n, DEFAULT_COINS_PER_PLAY);
+    this.changed();
+  }
+
+  /** §11.3 N11b */
+  setContinueCoins(n: number): void {
+    this.continueCost = clampCost(n, DEFAULT_CONTINUE_COINS);
+    this.changed();
+  }
 
   /**
    * §10.6 · §11.6 — **화면·모드와 무관하게 언제나 적립한다.** 관리자 화면에서도, 테스트 플레이

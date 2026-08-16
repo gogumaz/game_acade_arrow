@@ -14,7 +14,13 @@ import type { RunOutcome } from '../core/stats';
 import type { Clock, InputAction, PlayerId } from '../core/types';
 import { TUTORIAL_CHAIN_SAFE, tutorialBoard, type BoardSource } from './boardSource';
 import type { ChargeSource, CreditBalance, CreditsPort } from './creditsService';
-import { gradeOf, type Grade, type TipReason } from './grade';
+import {
+  GRADE_THRESHOLDS,
+  gradeOf,
+  type Grade,
+  type GradeThresholds,
+  type TipReason,
+} from './grade';
 import { filterSimultaneous } from './inputBuffer';
 import { NameEntryModel } from './nameEntry';
 import type { RankingEntry } from './rankingStore';
@@ -24,12 +30,30 @@ import type { Sfx } from './sfx';
 import {
   ATTRACT_PANELS,
   ATTRACT_PANEL_MS,
+  HINT_COOLDOWN_MS,
+  HINT_DISPLAY_MS,
   NAME_ENTRY_MS,
   RESULT_AUTO_MS,
   RUN_IDLE_END_MS,
   TUTORIAL_IDLE_MS,
   TUTORIAL_MAX_PLAYS,
 } from './timing';
+
+/** §11.1 · admin §2.2 — 관리자 화면 5분 무입력이면 안전 복귀한다 (ADM-006) */
+export const ADMIN_IDLE_MS = 300000;
+
+/** §11.4 중 **flow가 소비하는** 시간 3종 (WU-05 Q-1). 넘기지 않으면 WU-03 상수 그대로다 */
+export interface UiTimings {
+  readonly hintShowMs: number;
+  readonly hintCooldownMs: number;
+  readonly nameEntryMs: number;
+}
+
+const DEFAULT_UI_TIMINGS: UiTimings = {
+  hintShowMs: HINT_DISPLAY_MS,
+  hintCooldownMs: HINT_COOLDOWN_MS,
+  nameEntryMs: NAME_ENTRY_MS,
+};
 
 export type Screen =
   'ATTRACT' | 'READY' | 'TUTORIAL' | 'RUN' | 'CONTINUE' | 'RESULT' | 'NAME_ENTRY' | 'ADMIN';
@@ -93,6 +117,20 @@ export interface FlowDeps {
   readonly onSessionEnd?: (o: RunOutcome) => void;
   /** §11.6 관리자 테스트 플레이 — 랭킹·통계에서 제외한다 (CRD-607) */
   readonly isTestPlay?: () => boolean;
+  /** §11.4 등급 임계 4행 — 관리자 편집값 (WU-05 Q-1). 기본은 공장 임계표 */
+  readonly gradeThresholds?: () => GradeThresholds;
+  /** §11.4 힌트 표시·쿨다운·이름 입력 시간 (WU-05 Q-1) */
+  readonly uiTimings?: () => UiTimings;
+  /**
+   * §11 관리자 화면 입력 위임. 넘기지 않으면 WU-03과 같이 `BUTTON2`만 복귀로 쓴다
+   * (기본 동작 보존 — WU-03 flow 판정이 그대로 성립한다).
+   */
+  readonly adminInput?: (action: InputAction) => void;
+  /**
+   * ADM-006 — 5분 무입력 자동 복귀 직전 확인. `false`를 돌려주면 **복귀하지 않는다**
+   * (미저장 작업 보호 · admin §2.2).
+   */
+  readonly adminIdleGuard?: () => boolean;
 }
 
 type ScreenListener = (to: Screen, from: Screen) => void;
@@ -102,14 +140,18 @@ export class FlowMachine {
   private readonly credits: CreditsPort;
   private readonly boardSource: BoardSource;
   private readonly ranking: RankingStore;
-  private readonly params: CoreParams;
-  private readonly p: ResolvedParams;
+  private params: CoreParams;
+  private p: ResolvedParams;
   private readonly sfx: Sfx;
   private readonly nowIso: () => string;
   private readonly makeSession: (params: CoreParams, clock: Clock) => RunSession;
   private readonly onRankingChanged: () => void;
   private readonly onSessionEnd: (o: RunOutcome) => void;
   private readonly isTestPlay: () => boolean;
+  private readonly gradeThresholds: () => GradeThresholds;
+  private readonly uiTimings: () => UiTimings;
+  private readonly adminInput: ((action: InputAction) => void) | null;
+  private readonly adminIdleGuard: () => boolean;
   private readonly listeners = new Set<ScreenListener>();
   private readonly traceLog: string[] = [];
 
@@ -143,8 +185,26 @@ export class FlowMachine {
     this.onRankingChanged = deps.onRankingChanged ?? ((): void => undefined);
     this.onSessionEnd = deps.onSessionEnd ?? ((): void => undefined);
     this.isTestPlay = deps.isTestPlay ?? ((): boolean => false);
+    this.gradeThresholds = deps.gradeThresholds ?? ((): GradeThresholds => GRADE_THRESHOLDS);
+    this.uiTimings = deps.uiTimings ?? ((): UiTimings => DEFAULT_UI_TIMINGS);
+    this.adminInput = deps.adminInput ?? null;
+    this.adminIdleGuard = deps.adminIdleGuard ?? ((): boolean => true);
     this.enteredAtMs = deps.clock.now();
     this.lastInputAtMs = deps.clock.now();
+  }
+
+  /**
+   * §11.4 — 관리자 `SAVE`가 통과했을 때만 부른다. 반영 시점은 **다음 게임**이며
+   * 진행 중 세션·컨티뉴 직전 세션·테스트 플레이에 소급되지 않는다 (admin §8.4 · P-8).
+   */
+  applyParams(next: CoreParams): void {
+    this.params = next;
+    this.p = resolveParams(next);
+  }
+
+  /** 현재 적용 중인 코어 파라미터 — 관리자 화면이 "현재 영향"을 표시할 때 읽는다 */
+  get activeParams(): CoreParams {
+    return this.params;
   }
 
   get screen(): Screen {
@@ -239,6 +299,13 @@ export class FlowMachine {
         this.handleNameEntry(action);
         return;
       case 'ADMIN':
+        // §11.1 — 관리자 화면에서 START·게임 조작은 무효다. 컨트롤러가 붙어 있으면 나머지를
+        // 전부 위임하고, 없으면 WU-03과 같이 `BUTTON2`만 복귀로 쓴다
+        if (action === 'START') return;
+        if (this.adminInput !== null) {
+          this.adminInput(action);
+          return;
+        }
         if (action === 'BUTTON2') this.leaveAdmin();
         return;
     }
@@ -268,6 +335,10 @@ export class FlowMachine {
         return;
       case 'NAME_ENTRY':
         this.tickNameEntry(now);
+        return;
+      case 'ADMIN':
+        // ADM-006 — 5분 무입력 안전 복귀. 미저장 작업이 있으면 가드가 막는다 (admin §2.2)
+        if (now - this.lastInputAtMs >= ADMIN_IDLE_MS && this.adminIdleGuard()) this.leaveAdmin();
         return;
       default:
         return;
@@ -379,7 +450,8 @@ export class FlowMachine {
     // §10.2 — "차감 후 게임 진입에 실패하면 크레딧을 **원복**하고 사유를 남긴다".
     // 보드 생성이 끝내 실패하면 여기서 예외가 나오는데, WU-03까지는 그대로 크레딧이 사라졌다 (이월 F-3)
     try {
-      // §4.1 · Q-4 — 앱 실행 후 유료 런 첫 3회만 미니 튜토리얼을 보여 준다
+      // §4.1 · Q-4 — 앱 실행 후 유료 런 첫 3회만 미니 튜토리얼을 보여 준다.
+      // **테스트 플레이도 예외가 아니다** — WU-04 CRD-607 ①이 그 동작을 이미 고정했다
       if (this.paidPlaysCount <= TUTORIAL_MAX_PLAYS) this.enterTutorial();
       else this.enterRun();
     } catch (err) {
@@ -450,7 +522,7 @@ export class FlowMachine {
   private leaveResult(): void {
     const summary = this.resultSummary;
     if (summary !== null && summary.qualifies) {
-      this.nameModel = new NameEntryModel(this.clock.now(), NAME_ENTRY_MS);
+      this.nameModel = new NameEntryModel(this.clock.now(), this.uiTimings().nameEntryMs);
       this.go('NAME_ENTRY');
       return;
     }
@@ -495,6 +567,18 @@ export class FlowMachine {
     this.go(this.credits.canStart() ? 'READY' : this.adminReturn);
   }
 
+  /**
+   * §11.6 — 테스트 플레이 중단. 진행 중인 런을 **집계 없이** 버리고 관리자 화면으로 돌아간다.
+   * 클리어·런 종료·`G` 2초 홀드 세 경로가 전부 여기로 모인다.
+   */
+  abortToAdmin(): void {
+    this.disposeController();
+    this.resultSummary = null;
+    this.chargedSource = 'none';
+    this.nameModel = null;
+    this.go('ADMIN');
+  }
+
   private go(next: Screen): void {
     const from = this.current;
     if (next === 'RESULT' && from !== 'RESULT') this.buildResult();
@@ -516,7 +600,7 @@ export class FlowMachine {
     const score = run.displayScore;
     this.resultSummary = {
       score,
-      grade: gradeOf(score, this.bestPerfectStreak),
+      grade: gradeOf(score, this.bestPerfectStreak, this.gradeThresholds()),
       maxComboCentis: run.maxComboCentis,
       boardReached: run.boardNumber,
       continues: run.continueCount,
@@ -532,12 +616,14 @@ export class FlowMachine {
   // ── 보조 ───────────────────────────────────────────────────────────────
 
   private newController(): RunController {
+    const ui = this.uiTimings();
     return new RunController({
       session: this.makeSession(this.params, this.clock),
       boardSource: this.boardSource,
       clock: this.clock,
       sfx: this.sfx,
       params: this.params,
+      hint: { displayMs: ui.hintShowMs, cooldownMs: ui.hintCooldownMs },
     });
   }
 

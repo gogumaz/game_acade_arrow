@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld('gameFS', {
   read: (name) => ipcRenderer.invoke('gamefs:read', name),
   append: (name, line) => ipcRenderer.invoke('gamefs:append', name, line),
   quit: () => ipcRenderer.invoke('app:quit'),
+  // 관리자 `RESTART GAME`(H 2초 홀드) 전용 채널 (§11.7 · admin §10.6)
+  restart: () => ipcRenderer.invoke('app:restart'),
 });

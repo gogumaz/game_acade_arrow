@@ -17,15 +17,25 @@ export const GRADE_THRESHOLDS: Readonly<Record<Exclude<Grade, 'C'>, number>> = {
 /** §5.5 — S+는 "퍼펙트 3보드 연속"만으로도 성립한다 (docx §8.2 승계) */
 export const PERFECT_STREAK_FOR_S_PLUS = 3;
 
+/** 관리자 `GRADE * THRESHOLD` 4행이 넘겨 주는 형태 (§11.4 등급 그룹 — WU-05) */
+export type GradeThresholds = Readonly<Record<Exclude<Grade, 'C'>, number>>;
+
 /**
  * 최종 점수와 퍼펙트 연속 수로 등급을 판정한다.
  * `perfectStreak`는 런 중 **연속으로** 퍼펙트를 낸 보드 수의 최댓값이다.
+ *
+ * `thresholds`는 관리자가 편집한 값을 그대로 받는 선택 인자다. 기본값이 공장 임계표이므로
+ * 넘기지 않는 호출부는 WU-03과 완전히 같이 동작한다.
  */
-export function gradeOf(score: number, perfectStreak = 0): Grade {
-  if (score >= GRADE_THRESHOLDS['S+'] || perfectStreak >= PERFECT_STREAK_FOR_S_PLUS) return 'S+';
-  if (score >= GRADE_THRESHOLDS.S) return 'S';
-  if (score >= GRADE_THRESHOLDS.A) return 'A';
-  if (score >= GRADE_THRESHOLDS.B) return 'B';
+export function gradeOf(
+  score: number,
+  perfectStreak = 0,
+  thresholds: GradeThresholds = GRADE_THRESHOLDS
+): Grade {
+  if (score >= thresholds['S+'] || perfectStreak >= PERFECT_STREAK_FOR_S_PLUS) return 'S+';
+  if (score >= thresholds.S) return 'S';
+  if (score >= thresholds.A) return 'A';
+  if (score >= thresholds.B) return 'B';
   return 'C';
 }
 

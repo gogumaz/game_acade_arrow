@@ -20,7 +20,7 @@ const SCENE_FOR_SCREEN: Readonly<Record<Screen, string>> = {
   CONTINUE: 'Continue',
   RESULT: 'Result',
   NAME_ENTRY: 'NameEntry',
-  ADMIN: 'AdminStub',
+  ADMIN: 'Admin',
 };
 
 export abstract class ArrowScene extends Phaser.Scene {
@@ -44,6 +44,9 @@ export abstract class ArrowScene extends Phaser.Scene {
   update(): void {
     const flow = this.app.flow;
     flow.tick();
+    // 관리자 컨트롤러의 시계는 **화면과 무관하게** 흐른다 — 테스트 플레이 관찰(§11.6 결과 5항목)은
+    // 관리자 씬이 내려가 있는 동안 일어나기 때문이다
+    this.app.admin.tick();
     const snap = flow.snapshot();
     // 전이 직후 한 프레임은 아직 이전 씬이 살아 있다 — 남의 화면을 그리지 않는다
     if (SCENE_FOR_SCREEN[snap.screen] !== this.scene.key) return;

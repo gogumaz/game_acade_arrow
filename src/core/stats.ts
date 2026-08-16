@@ -32,15 +32,38 @@ const ROLLOVER_HISTORY = 8;
 /** §10.5 — 롤오버를 확인하는 4지점 */
 export type RolloverReason = 'boot' | 'run_start' | 'admin_enter' | 'stats_reset';
 
-/** §11.7 · admin §7.3·§7.4·§11.5 — 감사 로그 종류. 파일 기록은 WU-05 (P-12) */
+/**
+ * §11.7 · admin §7.3·§7.4·§11.5 — 감사 로그 종류. 파일 기록은 WU-05가 붙인다.
+ *
+ * 앞 5종이 WU-04가 쏘는 것이고, 뒤 8종은 WU-05 관리자 화면이 **같은 싱크로** 쏘는 것이다.
+ * 유니온에 **추가만** 했으므로 WU-04 판정은 그대로 성립한다.
+ */
 export type AuditKind =
-  'CLOCK_CHANGED' | 'CREDIT_RECOVERED' | 'STATS_RESET' | 'EVENT_GRANT' | 'CREDIT_LOG_FAILURE';
+  | 'CLOCK_CHANGED'
+  | 'CREDIT_RECOVERED'
+  | 'STATS_RESET'
+  | 'EVENT_GRANT'
+  | 'CREDIT_LOG_FAILURE'
+  | 'ADMIN_ENTER'
+  | 'ADMIN_EXIT'
+  | 'SETTING_CHANGE'
+  | 'PARAM_SAVE'
+  | 'PARAM_RESTORE'
+  | 'RANKING_RESET'
+  | 'SYSTEM_ACTION'
+  | 'TEST_PLAY';
 
 export interface AuditEvent {
   readonly kind: AuditKind;
   /** ISO 8601 */
   readonly at: string;
   readonly detail: string;
+  /** 이하 3종은 `audit_log.csv` 6열을 채우기 위한 **선택** 칸이다 (WU-04 경로는 비운다) */
+  readonly target?: string;
+  readonly before?: string;
+  readonly after?: string;
+  /** `ok` · `failed` · `[보류]` */
+  readonly result?: string;
 }
 
 export type AuditSink = (e: AuditEvent) => void;
@@ -196,7 +219,7 @@ function safeCount(n: number): number {
 export class StatsModel {
   private readonly wall: WallClock;
   private readonly auditSink: AuditSink;
-  private readonly ringCapacity: number;
+  private ringCapacity: number;
 
   private c: Counters = emptyCounters();
   private histogram = new Map<number, number>();
@@ -211,6 +234,22 @@ export class StatsModel {
     this.wall = deps.wall;
     this.auditSink = deps.audit ?? ((): void => undefined);
     this.ringCapacity = deps.ringCapacity ?? SCORE_RING_CAPACITY;
+  }
+
+  /**
+   * §11.4 `GRADE SAMPLE THRESHOLD` — 관리자가 편집한 분포 전환 표본 수.
+   * **부팅 순서에서만** 부른다 (admin §4.3 `RESTART REQUIRED`) — 세션 중 편집은 다음 실행부터
+   * 반영된다. 용량이 줄면 오래된 표본부터 버린다.
+   */
+  setRingCapacity(n: number): void {
+    const next = Math.max(1, Math.trunc(n));
+    if (!Number.isFinite(next)) return;
+    this.ringCapacity = next;
+    while (this.ring.length > this.ringCapacity) this.ring.shift();
+  }
+
+  get scoreRingCapacity(): number {
+    return this.ringCapacity;
   }
 
   // ── 롤오버 (§10.5 · admin §11.5 · CRD-605) ───────────────────────────────

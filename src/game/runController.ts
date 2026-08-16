@@ -21,7 +21,7 @@ import {
   initialFocus,
   moveFocus,
 } from './focus';
-import { HintController, type HintView } from './hint';
+import { HintController, type HintOptions, type HintView } from './hint';
 import { PullBuffer, type PullOutcome } from './inputBuffer';
 import type { Sfx } from './sfx';
 import { BOARD_TRANSITION_MS } from './timing';
@@ -93,6 +93,11 @@ export interface RunControllerDeps {
   readonly clock: Clock;
   readonly sfx: Sfx;
   readonly params: CoreParams;
+  /**
+   * §11.4 `HINT SHOW TIME`·`HINT COOLDOWN` — 관리자가 편집한 값 (WU-05 Q-1).
+   * 넘기지 않으면 `HintController`의 공장 기본값(2.5초 / 5.0초)이 그대로 쓰인다.
+   */
+  readonly hint?: HintOptions;
 }
 
 export class RunController {
@@ -101,7 +106,7 @@ export class RunController {
   private readonly clock: Clock;
   private readonly sfx: Sfx;
   private readonly p: ResolvedParams;
-  private readonly hintCtl = new HintController();
+  private readonly hintCtl: HintController;
   private readonly buffer: PullBuffer;
 
   private board: Board | null = null;
@@ -122,6 +127,7 @@ export class RunController {
     this.clock = deps.clock;
     this.sfx = deps.sfx;
     this.p = resolveParams(deps.params);
+    this.hintCtl = new HintController(deps.hint);
     this.buffer = new PullBuffer(
       {
         isLocked: () => this.session.isLocked(),

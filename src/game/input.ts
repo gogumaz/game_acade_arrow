@@ -151,6 +151,39 @@ type ActionListener = (pa: PlayerAction) => void;
 type AnyKeyListener = () => void;
 type StatusListener = (status: InputStatus) => void;
 
+/** 누름/뗌 (§11.7 INPUT TEST · 관리자 홀드 확인) */
+type InputPhase = 'down' | 'up';
+
+/**
+ * 누름·뗌 1건. `onAction`은 **누름만** 발화하므로 홀드 시간을 잴 수 없다 —
+ * `H` 2초/3초 홀드 확인(admin §13)과 `INPUT TEST`의 PRESS/RELEASE 표시(admin §10.1)가
+ * 둘 다 이 스트림 하나로 성립한다 (작업 계획 P-6).
+ */
+export interface PhaseEvent {
+  readonly player: PlayerId;
+  readonly action: InputAction;
+  readonly phase: InputPhase;
+  /** 반복·고착 판정과 같은 키 식별자 */
+  readonly sourceId: string;
+}
+
+export type PhaseListener = (e: PhaseEvent) => void;
+
+/**
+ * **`InputAdapter`를 바꾸지 않는다.** 구조적으로 이 메서드를 가진 어댑터에서만 결선하므로
+ * WU-03·WU-04의 어댑터 대역(`onPhase`가 없는 객체)이 그대로 살아 있다 (P-6).
+ */
+interface PhaseSource {
+  onPhase(fn: PhaseListener): () => void;
+}
+
+/** 구조적 판정 — 어댑터가 phase 스트림을 갖고 있는가 */
+export function asPhaseSource(adapter: object): PhaseSource | null {
+  return 'onPhase' in adapter && typeof (adapter as PhaseSource).onPhase === 'function'
+    ? (adapter as PhaseSource)
+    : null;
+}
+
 interface RepeatTimers {
   delay?: TimerHandle;
   interval?: TimerHandle;
@@ -164,14 +197,19 @@ interface RepeatTimers {
  * - `releaseAll()`(창 blur)에서 모든 반복 타이머 즉시 해제 (§2.5)
  * - 3상태: connected / disconnected / stuck (§11.7)
  */
-export class InputStateMachine {
+export class InputStateMachine implements PhaseSource {
   private actionListeners: ActionListener[] = [];
   private anyKeyListeners: AnyKeyListener[] = [];
   private statusListeners: StatusListener[] = [];
+  private phaseListeners: PhaseListener[] = [];
   private readonly repeats = new Map<string, RepeatTimers>();
   private readonly stuckTimers = new Map<string, TimerHandle>();
   private readonly stuckSources = new Set<string>();
+  /** 눌린 채로 있는 입력 — 뗌 이벤트가 어떤 액션인지 알려면 필요하다 */
+  private readonly held = new Map<string, PlayerAction>();
   private connected = false;
+  /** §2.1 · ADM-003 — 출시 빌드는 `F9`를 죽이고 물리 SERVICE 키만 남긴다. 기본은 활성 */
+  private serviceKeyEnabled = true;
 
   constructor(private readonly timers: InputTimers = systemTimers) {}
 
@@ -203,11 +241,31 @@ export class InputStateMachine {
     };
   }
 
+  /** 누름·뗌 스트림 (P-6). `onAction`과 **독립**이라 기존 구독자는 영향을 받지 않는다 */
+  onPhase(fn: PhaseListener): () => void {
+    this.phaseListeners.push(fn);
+    return () => {
+      this.phaseListeners = this.phaseListeners.filter((f) => f !== fn);
+    };
+  }
+
+  /** ADM-003 — `false`면 `SERVICE` 입력이 어떤 액션도 만들지 않는다 */
+  setServiceKeyEnabled(on: boolean): void {
+    this.serviceKeyEnabled = on;
+  }
+
+  get isServiceKeyEnabled(): boolean {
+    return this.serviceKeyEnabled;
+  }
+
   /** 어댑터 연결/분리. connected ↔ disconnected 전이의 유일한 입구다 */
   setConnected(next: boolean): void {
     if (this.connected === next) return;
     const before = this.status;
-    if (!next) this.clearAllTimers();
+    if (!next) {
+      this.clearAllTimers();
+      for (const sourceId of [...this.held.keys()]) this.releasePhase(sourceId);
+    }
     this.connected = next;
     this.notifyStatus(before);
   }
@@ -219,12 +277,16 @@ export class InputStateMachine {
   press(sourceId: string, pa: PlayerAction | undefined, repeat = false): void {
     if (!this.connected) return;
     if (repeat) return;
+    // ADM-003 — 개발 플래그가 꺼지면 `F9`는 아무 일도 하지 않는다 (`KEYMAP` 자체는 불변)
+    if (pa && pa.action === 'SERVICE' && !this.serviceKeyEnabled) return;
 
     if (!pa || !ANY_KEY_EXCLUDED.includes(pa.action)) {
       for (const fn of [...this.anyKeyListeners]) fn();
     }
     if (!pa) return;
 
+    this.held.set(sourceId, pa);
+    this.firePhase(sourceId, pa, 'down');
     this.fire(pa);
     this.armStuck(sourceId);
     if (DIRECTIONS.includes(pa.action)) this.armRepeat(sourceId, pa);
@@ -235,6 +297,7 @@ export class InputStateMachine {
     const before = this.status;
     this.clearRepeat(sourceId);
     this.clearStuck(sourceId);
+    this.releasePhase(sourceId);
     this.notifyStatus(before);
   }
 
@@ -242,7 +305,21 @@ export class InputStateMachine {
   releaseAll(): void {
     const before = this.status;
     this.clearAllTimers();
+    for (const sourceId of [...this.held.keys()]) this.releasePhase(sourceId);
     this.notifyStatus(before);
+  }
+
+  private releasePhase(sourceId: string): void {
+    const pa = this.held.get(sourceId);
+    if (pa === undefined) return;
+    this.held.delete(sourceId);
+    this.firePhase(sourceId, pa, 'up');
+  }
+
+  private firePhase(sourceId: string, pa: PlayerAction, phase: InputPhase): void {
+    if (this.phaseListeners.length === 0) return;
+    const e: PhaseEvent = { player: pa.player, action: pa.action, phase, sourceId };
+    for (const fn of [...this.phaseListeners]) fn(e);
   }
 
   private fire(pa: PlayerAction): void {
@@ -329,7 +406,7 @@ function browserTarget(): KeyEventTarget {
   return window as unknown as KeyEventTarget;
 }
 
-export class KeyboardInputAdapter implements InputAdapter {
+export class KeyboardInputAdapter implements InputAdapter, PhaseSource {
   readonly id = 'keyboard';
   private readonly core: InputStateMachine;
   private readonly target: KeyEventTarget | null;
@@ -379,6 +456,16 @@ export class KeyboardInputAdapter implements InputAdapter {
 
   onStatusChange(fn: StatusListener): () => void {
     return this.core.onStatusChange(fn);
+  }
+
+  /** P-6 — 관리자 홀드 확인과 INPUT TEST가 쓰는 누름/뗌 스트림 */
+  onPhase(fn: PhaseListener): () => void {
+    return this.core.onPhase(fn);
+  }
+
+  /** ADM-003 — `main.ts`가 `import.meta.env.DEV`를 넣는다 */
+  setServiceKeyEnabled(on: boolean): void {
+    this.core.setServiceKeyEnabled(on);
   }
 
   private readonly onDown = (e: KeyEventLike): void => {
