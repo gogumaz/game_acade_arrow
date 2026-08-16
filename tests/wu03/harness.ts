@@ -12,8 +12,9 @@ import { RunSession } from '../../src/core/session';
 import type { Chain, ChainId, Clock, GridPoint } from '../../src/core/types';
 import type { CoreParams } from '../../src/core/params';
 import { FACTORY_PARAMS } from '../../src/core/params';
-import type { CreditsPort, ChargeSource, CreditBalance } from '../../src/game/creditsStub';
-import { createCreditsStub } from '../../src/game/creditsStub';
+import { StatsModel, type WallClock } from '../../src/core/stats';
+import type { CreditsPort, ChargeSource, CreditBalance } from '../../src/game/creditsService';
+import { CreditsService } from '../../src/game/creditsService';
 import { memoryBackend, Storage, type StorageTimers } from '../../src/persist/storage';
 
 export { TestClock, lcg } from '../wu02/fixtures';
@@ -127,6 +128,18 @@ export function startedSession(
 
 // ── 가짜 포트 ──────────────────────────────────────────────────────────────
 
+/**
+ * WU-03 테스트가 쓰는 최소 벽시계. 날짜를 고정해 두면 롤오버가 개입하지 않는다.
+ * (날짜·시간 조작 시나리오는 WU-04 `tests/wu04/harness.ts`가 따로 갖는다)
+ */
+export function fixedWallClock(date = '2026-08-16'): WallClock {
+  return {
+    nowMs: () => Date.parse(`${date}T00:00:00.000Z`),
+    localDate: () => date,
+    nowIso: () => `${date}T00:00:00.000Z`,
+  };
+}
+
 /** 호출 횟수까지 세는 크레딧 스파이 (CRD-601은 "몇 번" 차감했는지가 판정 대상이다) */
 export interface CreditsSpy extends CreditsPort {
   readonly calls: {
@@ -135,13 +148,27 @@ export interface CreditsSpy extends CreditsPort {
     chargeContinue: number;
     refund: number;
   };
+  /** WU-04 구현체 본체 — 로그·통계를 직접 보고 싶은 테스트용 */
+  readonly inner: CreditsService;
 }
 
+/**
+ * WU-04 정식 구현체(`CreditsService`)를 그대로 감싼다 (Q-5).
+ * 스텁을 갈아 끼워도 §10.1~§10.4 계약이 그대로라는 사실을 WU-03 회귀가 계속 증명한다.
+ */
 export function creditsSpy(cfg?: { coinsPerPlay?: number; continueCoins?: number }): CreditsSpy {
-  const inner = createCreditsStub(cfg);
+  const inner = new CreditsService({
+    stats: new StatsModel({ wall: fixedWallClock() }),
+    clock: { now: () => 0 },
+    nowIso: () => '2026-08-16T00:00:00.000Z',
+    appendCreditLog: () => Promise.resolve(),
+    coinsPerPlay: cfg?.coinsPerPlay ?? 1,
+    continueCoins: cfg?.continueCoins ?? 1,
+  });
   const calls = { insertCoin: 0, chargeStart: 0, chargeContinue: 0, refund: 0 };
   return {
     calls,
+    inner,
     coinsPerPlay: inner.coinsPerPlay,
     continueCoins: inner.continueCoins,
     insertCoin(): boolean {

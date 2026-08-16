@@ -148,19 +148,31 @@ export function parseStatsCsv(csv: string): StatsRecord | null {
 
 // ── 크레딧 사용 로그 (§9.1 credit_log.csv · 추가 전용) ────────────────────
 
-/** §9.1 확정 액션 5종 */
+/**
+ * §9.1 확정 액션 6종.
+ *
+ * `service_grant`는 §10.6 크래시 복구·정비 지급이다 (WU-04 Q-1). 일반 코인 적립과 분리해야
+ * admin §7.2 `SERVICE CREDIT GRANTED`가 `PAID CREDIT GRANTED`와 섞이지 않는다.
+ */
 export const CREDIT_LOG_ACTIONS = [
   'coin_insert',
   'pay',
   'refund',
   'event_grant',
   'event_clear',
+  'service_grant',
 ] as const;
 
 export type CreditLogAction = (typeof CREDIT_LOG_ACTIONS)[number];
 
-/** §9.1 확정 컬럼: `timestamp,action,source,paidBalance,eventBalance` */
-export const CREDIT_LOG_HEADER = 'timestamp,action,source,paidBalance,eventBalance';
+/**
+ * §9.1 확정 컬럼: `timestamp,action,source,paidBalance,eventBalance,reason`.
+ *
+ * 6번째 `reason`은 §10.2 "차감 후 게임 진입에 실패하면 크레딧을 원복하고 `credit_log.csv`에
+ * **원복 사유**를 남긴다"를 위한 칸이다 (WU-04 Q-1). `pay` 행에서는 `start`/`continue`를 담아
+ * 시작 결제와 컨티뉴 결제를 구분한다.
+ */
+export const CREDIT_LOG_HEADER = 'timestamp,action,source,paidBalance,eventBalance,reason';
 
 export interface CreditLogRecord {
   /** ISO 8601 */
@@ -170,6 +182,8 @@ export interface CreditLogRecord {
   source: string;
   paidBalance: number;
   eventBalance: number;
+  /** 원복 사유 · 결제 종류 · 지급 사유. 없으면 빈 문자열 */
+  reason: string;
 }
 
 export function creditLogLine(rec: CreditLogRecord): string {
@@ -179,10 +193,11 @@ export function creditLogLine(rec: CreditLogRecord): string {
     sanitizeField(rec.source),
     rec.paidBalance,
     rec.eventBalance,
+    sanitizeField(rec.reason),
   ].join(',');
 }
 
-/** 손상 행이면 null */
+/** 손상 행이면 null. 컬럼이 5개인 옛 행은 `reason: ''`로 읽는다 (하위 호환) */
 export function parseCreditLogLine(line: string): CreditLogRecord | null {
   const c = line.split(',');
   if (c.length < 5) return null;
@@ -196,6 +211,8 @@ export function parseCreditLogLine(line: string): CreditLogRecord | null {
     source: c[2],
     paidBalance: paid,
     eventBalance: event,
+    // `noUncheckedIndexedAccess`가 꺼져 있어 `c[5] ?? ''`는 no-unnecessary-condition 오류다
+    reason: c.length > 5 ? c[5] : '',
   };
 }
 

@@ -280,6 +280,7 @@ describe('WU-01 스모크 ④ CSV 왕복 (§9.1)', () => {
       source: 'paid',
       paidBalance: 1,
       eventBalance: 0,
+      reason: '', // WU-04 Q-1 — §10.2 원복 사유 칸
     };
     expect(parseCreditLogLine(creditLogLine(credit))).toEqual(credit);
   });

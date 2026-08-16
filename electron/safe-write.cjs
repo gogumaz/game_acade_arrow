@@ -13,7 +13,8 @@ const FILE_NAME_PATTERN = /^[\w.-]+$/;
 
 /** §9.1 저장 파일 6종 중 추가 전용 로그의 헤더 */
 const CREDIT_LOG_FILE = 'credit_log.csv';
-const CREDIT_LOG_HEADER = 'timestamp,action,source,paidBalance,eventBalance';
+// 6번째 `reason` 컬럼은 §10.2 원복 사유용이다 — 렌더러(src/persist/csv.ts)와 반드시 같아야 한다
+const CREDIT_LOG_HEADER = 'timestamp,action,source,paidBalance,eventBalance,reason';
 
 /** §9.4 — 60초 안에 3회 치명 오류면 자동 재실행을 멈춘다 */
 const FATAL_LIMIT = 3;

@@ -256,6 +256,33 @@ export class Storage {
     }
   }
 
+  /**
+   * 실패를 **던지는** append (§12.4 "유료 크레딧 차감 로그 기록 실패 반복" 판정용).
+   * `appendLine`은 `onError`로 삼키므로 호출자가 실패를 셀 수 없다 (WU-04 §6.2).
+   */
+  async appendLineStrict(file: SaveFileName, line: string): Promise<void> {
+    try {
+      await this.backendRef.append(file, line);
+    } catch (err) {
+      this.onError('append', err);
+      throw err;
+    }
+  }
+
+  /**
+   * 디바운스를 건너뛰고 문서 1건만 즉시 저장한다 (§10.6 크래시 마커 — 지연되면 복구 창이 열린다).
+   * 등록되지 않은 파일이면 아무것도 하지 않는다.
+   */
+  async saveNow(file: SaveFileName): Promise<void> {
+    const doc = this.documents.find((d) => d.file === file);
+    if (doc === undefined) return;
+    try {
+      await this.backendRef.write(doc.file, doc.serialize());
+    } catch (err) {
+      this.onError('save', err);
+    }
+  }
+
   read(file: SaveFileName): Promise<string | null> {
     return this.backendRef.read(file);
   }

@@ -199,19 +199,22 @@ describe('credit_log 코덱 (§9.1 확정 컬럼)', () => {
     source: 'paid',
     paidBalance: 3,
     eventBalance: 1,
+    reason: '',
   };
 
+  // WU-04 Q-1 — §10.2 "원복 사유를 남긴다"를 지키려고 6번째 `reason` 칸을 더했다
   it('헤더가 §9.1 확정 컬럼과 같다', () => {
-    expect(CREDIT_LOG_HEADER).toBe('timestamp,action,source,paidBalance,eventBalance');
+    expect(CREDIT_LOG_HEADER).toBe('timestamp,action,source,paidBalance,eventBalance,reason');
   });
 
-  it('액션 5종이 §9.1과 같다', () => {
+  it('액션 6종이 §9.1과 같다', () => {
     expect([...CREDIT_LOG_ACTIONS]).toEqual([
       'coin_insert',
       'pay',
       'refund',
       'event_grant',
       'event_clear',
+      'service_grant',
     ]);
   });
 

@@ -10,9 +10,10 @@ import type { CoreParams, ResolvedParams } from '../core/params';
 import { resolveParams } from '../core/params';
 import { RunSession } from '../core/session';
 import type { EndReason } from '../core/session';
+import type { RunOutcome } from '../core/stats';
 import type { Clock, InputAction, PlayerId } from '../core/types';
 import { TUTORIAL_CHAIN_SAFE, tutorialBoard, type BoardSource } from './boardSource';
-import type { ChargeSource, CreditBalance, CreditsPort } from './creditsStub';
+import type { ChargeSource, CreditBalance, CreditsPort } from './creditsService';
 import { gradeOf, type Grade, type TipReason } from './grade';
 import { filterSimultaneous } from './inputBuffer';
 import { NameEntryModel } from './nameEntry';
@@ -85,6 +86,13 @@ export interface FlowDeps {
   readonly makeSession?: (params: CoreParams, clock: Clock) => RunSession;
   /** 랭킹이 바뀌었다 — 호출자가 `Storage.scheduleSave()`를 건다 */
   readonly onRankingChanged?: () => void;
+  /**
+   * §10.5 — **결과 화면이 닫히는 시점** 1건. 세션 점유 시간 종료·도달 보드 히스토그램·
+   * 점수 링 버퍼가 전부 이 훅으로 처리된다 (작업 계획 P-4). WU-04 `CreditsService.closeSession`.
+   */
+  readonly onSessionEnd?: (o: RunOutcome) => void;
+  /** §11.6 관리자 테스트 플레이 — 랭킹·통계에서 제외한다 (CRD-607) */
+  readonly isTestPlay?: () => boolean;
 }
 
 type ScreenListener = (to: Screen, from: Screen) => void;
@@ -100,6 +108,8 @@ export class FlowMachine {
   private readonly nowIso: () => string;
   private readonly makeSession: (params: CoreParams, clock: Clock) => RunSession;
   private readonly onRankingChanged: () => void;
+  private readonly onSessionEnd: (o: RunOutcome) => void;
+  private readonly isTestPlay: () => boolean;
   private readonly listeners = new Set<ScreenListener>();
   private readonly traceLog: string[] = [];
 
@@ -131,6 +141,8 @@ export class FlowMachine {
     this.nowIso = deps.nowIso;
     this.makeSession = deps.makeSession ?? ((params, clock) => new RunSession(params, clock));
     this.onRankingChanged = deps.onRankingChanged ?? ((): void => undefined);
+    this.onSessionEnd = deps.onSessionEnd ?? ((): void => undefined);
+    this.isTestPlay = deps.isTestPlay ?? ((): boolean => false);
     this.enteredAtMs = deps.clock.now();
     this.lastInputAtMs = deps.clock.now();
   }
@@ -333,7 +345,8 @@ export class FlowMachine {
       return;
     }
     if (!this.requireController().continueRun()) {
-      this.credits.refund(1, source, '컨티뉴 복귀 실패');
+      // §10.2 — 낸 금액 그대로 되돌린다. `1` 하드코딩은 `CONTINUE COINS ≥ 2`에서 크레딧을 삼켰다
+      this.credits.refund(this.credits.continueCoins, source, '컨티뉴 복귀 실패');
       this.go('RESULT');
       return;
     }
@@ -363,9 +376,21 @@ export class FlowMachine {
     this.chargedSource = source;
     this.paidPlaysCount += 1;
     this.sfx.play('confirm');
-    // §4.1 · Q-4 — 앱 실행 후 유료 런 첫 3회만 미니 튜토리얼을 보여 준다
-    if (this.paidPlaysCount <= TUTORIAL_MAX_PLAYS) this.enterTutorial();
-    else this.enterRun();
+    // §10.2 — "차감 후 게임 진입에 실패하면 크레딧을 **원복**하고 사유를 남긴다".
+    // 보드 생성이 끝내 실패하면 여기서 예외가 나오는데, WU-03까지는 그대로 크레딧이 사라졌다 (이월 F-3)
+    try {
+      // §4.1 · Q-4 — 앱 실행 후 유료 런 첫 3회만 미니 튜토리얼을 보여 준다
+      if (this.paidPlaysCount <= TUTORIAL_MAX_PLAYS) this.enterTutorial();
+      else this.enterRun();
+    } catch (err) {
+      this.paidPlaysCount -= 1;
+      this.credits.refund(this.credits.coinsPerPlay, this.chargedSource, '런 진입 실패');
+      this.chargedSource = 'none';
+      this.disposeController();
+      this.sfx.play('reject');
+      this.go(this.credits.canStart() ? 'READY' : 'ATTRACT');
+      this.traceLog.push(`entry-failed:${String(err)}`);
+    }
   }
 
   /** Q-5 — 전용 세션으로 돌리고 곧바로 정지한다. 본 런의 콤보 기준 시각이 오염되지 않는다 */
@@ -451,6 +476,15 @@ export class FlowMachine {
 
   /** §2.7 — 남은 크레딧은 유지된다. `C` 이상이면 어트랙트를 건너뛰고 시작 화면으로 */
   private finishSession(): void {
+    // §10.5 — 결과 화면 종료 = 세션 점유 시간의 끝. 요약을 지우기 **전에** 넘긴다 (P-4)
+    const summary = this.resultSummary;
+    if (summary !== null) {
+      this.onSessionEnd({
+        boardReached: summary.boardReached,
+        score: summary.score,
+        counted: !this.isTestPlay(),
+      });
+    }
     this.disposeController();
     this.resultSummary = null;
     this.chargedSource = 'none';
@@ -488,7 +522,9 @@ export class FlowMachine {
       continues: run.continueCount,
       endReason: reason,
       tip: tipReasonOf(reason, run.hearts),
-      qualifies: this.ranking.qualifies(score),
+      // §11.6 · CRD-607 — 테스트 플레이는 **랭킹에 일절 집계하지 않는다**.
+      // `qualifies`가 false면 `NAME_ENTRY`에 아예 도달하지 않아 `ranking.submit()`이 불리지 않는다
+      qualifies: !this.isTestPlay() && this.ranking.qualifies(score),
       perfectStreak: this.bestPerfectStreak,
     };
   }
