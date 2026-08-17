@@ -16,6 +16,15 @@ const CELL = BOARD_WIDTH / 12;
 export const SCREEN_WIDTH = 1920;
 export const SCREEN_HEIGHT = 1080;
 
+/** EFX-801 정적 레이아웃 계측용 사각형(우·하단 값은 exclusive). */
+export const REGIONS = {
+  board: { x: 640, y: 60, width: 640, height: 960 },
+  leftHud: { x: 0, y: 60, width: 620, height: 960 },
+  rightHud: { x: 1300, y: 60, width: 620, height: 960 },
+  time: { x: 640, y: 0, width: 640, height: 60 },
+  boardFooter: { x: 640, y: 1020, width: 640, height: 60 },
+} as const;
+
 /** §8.1 좌 HUD x 0~620 · 우 HUD x 1300~1920 · 상단 시간 y 0~60 · 하단 사슬 수 y 1020~1080 */
 export const LAYOUT = {
   leftHudX: 40,
@@ -44,6 +53,7 @@ export const PALETTE = {
   focus: 0x35e0ff,
   blocked: 0xff4d5e,
   hint: 0xffd24a,
+  successTrail: 0xa66bff,
   heartFull: 0xff6b8a,
   heartEmpty: 0x40485c,
   text: 0xf2f5fa,
@@ -57,6 +67,7 @@ export const CSS = {
   focus: '#35E0FF',
   blocked: '#FF4D5E',
   hint: '#FFD24A',
+  successTrail: '#A66BFF',
   heart: '#FF6B8A',
 } as const;
 
@@ -97,6 +108,27 @@ export function formatTime(ms: number): string {
 /** 카운트다운 — 남은 초를 올림해서 항상 1 이상으로 보인다 (§8.4 "남은 초를 항상 표시") */
 export function formatCountdown(ms: number): string {
   return Math.max(0, Math.ceil(ms / 1000)).toString();
+}
+
+/** EFX-811 — 혼합 한글/ASCII 모노스페이스의 보수적 폭 추정(한글 1em, ASCII 0.62em). */
+export function estimatedTextWidth(text: string, fontSize: number): number {
+  let em = 0;
+  for (const char of text) em += (char.codePointAt(0) ?? 0) >= 0x2e80 ? 1 : 0.62;
+  return em * fontSize;
+}
+
+/** 잘림이 예상되면 4px 단위로 줄이되 §8.3 보조 텍스트 하한 22px을 지킨다. */
+export function fitFontSizeForWidth(
+  text: string,
+  baseSize: number,
+  maxWidth: number,
+  minSize = FONT_SIZE.body
+): number {
+  let size = baseSize;
+  while (size > minSize && estimatedTextWidth(text, size) > maxWidth) {
+    size = Math.max(minSize, size - 4);
+  }
+  return size;
 }
 
 /** 두 점 사이를 선형 보간한 격자 좌표 — 슬라이드 아웃의 중간 위치 계산 */

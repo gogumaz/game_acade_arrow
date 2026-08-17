@@ -38,6 +38,8 @@ export class AdminScene extends ArrowScene {
   private dangerBody!: Phaser.GameObjects.Text;
   private dangerBar!: Phaser.GameObjects.Rectangle;
   private cursorBar!: Phaser.GameObjects.Rectangle;
+  private displayPattern!: Phaser.GameObjects.Container;
+  private displayCountdown!: Phaser.GameObjects.Text;
 
   constructor() {
     super('Admin');
@@ -97,6 +99,7 @@ export class AdminScene extends ArrowScene {
       .rectangle(320, L.dangerY + 120, 0, 18, ADMIN_HEX.cursor)
       .setOrigin(0, 0.5)
       .setVisible(false);
+    this.buildDisplayPattern();
   }
 
   update(): void {
@@ -159,6 +162,13 @@ export class AdminScene extends ArrowScene {
     if (toast !== null) this.toast.setColor(colorOfToast(toast.level));
 
     this.drawDanger(view);
+    const displayVisible = view.displayTestRemainingMs > 0;
+    this.displayPattern.setVisible(displayVisible);
+    if (displayVisible) {
+      this.displayCountdown.setText(
+        `DISPLAY TEST · ${String(Math.ceil(view.displayTestRemainingMs / 1000))}초 · G 복귀`
+      );
+    }
   }
 
   private drawDanger(view: AdminView): void {
@@ -194,5 +204,56 @@ export class AdminScene extends ArrowScene {
       fontSize: `${String(size)}px`,
       color,
     });
+  }
+
+  /** admin §10.3 — 정적 안전 영역·RGB·백/흑·폰트 패턴. 점멸은 사용하지 않는다. */
+  private buildDisplayPattern(): void {
+    const objects: Phaser.GameObjects.GameObject[] = [];
+    const bg = this.add.rectangle(960, 540, 1920, 1080, 0x050505);
+    objects.push(bg);
+    const grid = this.add.graphics();
+    grid.lineStyle(2, 0x3a3a3a, 1);
+    for (let x = 0; x <= 1920; x += 120) {
+      grid.beginPath();
+      grid.moveTo(x, 0);
+      grid.lineTo(x, 1080);
+      grid.strokePath();
+    }
+    for (let y = 0; y <= 1080; y += 120) {
+      grid.beginPath();
+      grid.moveTo(0, y);
+      grid.lineTo(1920, y);
+      grid.strokePath();
+    }
+    grid.lineStyle(4, 0xffffff, 1).strokeRect(48, 48, 1824, 984);
+    objects.push(grid);
+    const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffffff, 0x000000];
+    for (let i = 0; i < colors.length; i += 1) {
+      objects.push(
+        this.add
+          .rectangle(360 + i * 300, 360, 250, 220, colors[i])
+          .setStrokeStyle(3, i === colors.length - 1 ? 0xffffff : 0x333333)
+      );
+    }
+    this.displayCountdown = this.add
+      .text(960, 90, '', {
+        fontFamily: ADMIN_FONT.family,
+        fontSize: '40px',
+        color: '#FFFFFF',
+      })
+      .setOrigin(0.5);
+    objects.push(this.displayCountdown);
+    for (const [i, size] of [72, 48, 28, 22].entries()) {
+      objects.push(
+        this.add
+          .text(960, 560 + i * 90, `${String(size)}px  ARROW OUT · 한글 0123456789`, {
+            fontFamily: ADMIN_FONT.family,
+            fontSize: `${String(size)}px`,
+            color: '#FFFFFF',
+          })
+          .setOrigin(0.5)
+      );
+    }
+    this.displayPattern = this.add.container(0, 0, objects).setDepth(1000).setVisible(false);
   }
 }

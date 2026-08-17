@@ -41,6 +41,7 @@ export class Hud {
   private readonly best: Phaser.GameObjects.Text;
   private readonly hint: Phaser.GameObjects.Text;
   private readonly board: Phaser.GameObjects.Text;
+  private readonly next: Phaser.GameObjects.Text;
   private readonly credit: Phaser.GameObjects.Text;
   private readonly pull: Phaser.GameObjects.Text;
   private readonly chains: Phaser.GameObjects.Text;
@@ -63,7 +64,8 @@ export class Hud {
     this.hint = label(scene, L, 940, FONT_SIZE.label, CSS.hint);
     this.hearts = scene.add.graphics();
     this.board = label(scene, R, LAYOUT.hudTopY + line, FONT_SIZE.label, CSS.text);
-    this.credit = label(scene, R, LAYOUT.hudTopY + line * 2, FONT_SIZE.label, CSS.dim);
+    this.next = label(scene, R, LAYOUT.hudTopY + line * 2, FONT_SIZE.body, CSS.dim);
+    this.credit = label(scene, R, LAYOUT.hudTopY + line * 3, FONT_SIZE.label, CSS.dim);
     this.pull = label(scene, R, 940, FONT_SIZE.label, CSS.focus);
     this.chains = label(scene, LAYOUT.centerX + 40, LAYOUT.bottomY, FONT_SIZE.label, CSS.dim);
     this.ring = scene.add.graphics();
@@ -75,6 +77,7 @@ export class Hud {
       this.best,
       this.hint,
       this.board,
+      this.next,
       this.credit,
       this.pull,
       this.chains,
@@ -119,6 +122,7 @@ export class Hud {
     this.drawHearts(run.hearts);
 
     this.board.setText(`BOARD ${pad2(run.boardNumber)} · ${run.tierLabel}`);
+    this.next.setText('NEXT  생성 완료');
     this.credit.setText(`CREDIT ${snap.credits.paid + snap.credits.event}`);
     this.pull.setText('[H] PULL');
 

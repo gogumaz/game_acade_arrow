@@ -8,6 +8,7 @@ import Phaser from 'phaser';
 import { APP_REGISTRY_KEY, createApp } from './game/app';
 import { keyboard } from './game/input';
 import { PALETTE } from './game/render/boardView';
+import { createWebAudioSfx } from './game/sfx';
 import { AdminScene } from './scenes/AdminScene';
 import { AttractScene } from './scenes/AttractScene';
 import { BootScene } from './scenes/BootScene';
@@ -48,6 +49,7 @@ const gameFS = (globalThis as { gameFS?: { restart?: () => Promise<void> } }).ga
 // 씬은 이 값을 레지스트리에서 읽는다. `Phaser.Game` 생성 직후는 아직 부팅 전이라
 // Boot 씬의 create()보다 먼저 실행된다.
 const app = createApp({
+  sfx: createWebAudioSfx(),
   system: {
     restart: async (): Promise<string> => {
       if (gameFS?.restart === undefined) return '[보류]';
@@ -67,5 +69,6 @@ if (import.meta.env.DEV) {
     app,
     snapshot: () => app.flow.snapshot(),
     trace: () => app.flow.trace,
+    performance: () => app.fx.report(),
   };
 }

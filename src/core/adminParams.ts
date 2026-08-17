@@ -514,7 +514,6 @@ export const FIELD_SCHEMA: readonly FieldSpec[] = [
     unit: '',
     applyTiming: 'LIVE',
     binding: 'store',
-    pendingUnit: 'WU-07',
   },
   {
     id: 'machine.attractVolume',
@@ -525,7 +524,6 @@ export const FIELD_SCHEMA: readonly FieldSpec[] = [
     unit: '%',
     applyTiming: 'LIVE',
     binding: 'store',
-    pendingUnit: 'WU-07',
   },
   {
     id: 'machine.nightMute',
@@ -541,7 +539,6 @@ export const FIELD_SCHEMA: readonly FieldSpec[] = [
     applyTiming: 'LIVE',
     binding: 'store',
     separator: '~',
-    pendingUnit: 'WU-07',
   },
   {
     id: 'machine.coinsPerPlay',
@@ -585,7 +582,6 @@ export const FIELD_SCHEMA: readonly FieldSpec[] = [
     unit: '',
     applyTiming: 'NEXT GAME',
     binding: 'store',
-    pendingUnit: 'WU-07',
   },
 ];
 

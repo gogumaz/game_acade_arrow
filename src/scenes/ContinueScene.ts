@@ -28,7 +28,11 @@ export class ContinueScene extends ArrowScene {
 
   protected paint(snap: FlowSnapshot): void {
     const run = snap.run;
-    if (run !== null) this.board.draw(run, this.app.clock.now());
+    if (run !== null)
+      this.board.draw(run, this.app.clock.now(), {
+        motionReduced: this.app.fx.motionReduced,
+        performanceSimplified: this.app.fx.report().simplified,
+      });
     this.panel.set(continuePanel(snap));
   }
 }

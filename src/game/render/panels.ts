@@ -158,7 +158,7 @@ export class TextPanel {
   constructor(
     scene: Phaser.Scene,
     private readonly centerY = LAYOUT.centerY - 160,
-    titleSize: number = FONT_SIZE.headline
+    private readonly titleSize: number = FONT_SIZE.headline
   ) {
     this.title = scene.add
       .text(LAYOUT.centerX, this.centerY, '', {
@@ -181,14 +181,36 @@ export class TextPanel {
   }
 
   set(text: PanelText): void {
-    this.title.setText(text.title);
+    this.fit(this.title, text.title, this.titleSize, FONT_SIZE.label, 1760);
     for (let i = 0; i < MAX_LINES; i += 1) {
-      this.lines[i].setText(i < text.lines.length ? text.lines[i] : '');
+      this.fit(
+        this.lines[i],
+        i < text.lines.length ? text.lines[i] : '',
+        FONT_SIZE.label,
+        FONT_SIZE.body,
+        1760
+      );
     }
   }
 
   destroy(): void {
     this.title.destroy();
     for (const line of this.lines) line.destroy();
+  }
+
+  /** EFX-811 — 고정 폭을 넘으면 최소 22px까지 단계적으로 줄여 잘림을 막는다. */
+  private fit(
+    target: Phaser.GameObjects.Text,
+    value: string,
+    baseSize: number,
+    minSize: number,
+    maxWidth: number
+  ): void {
+    target.setText(value).setFontSize(baseSize);
+    let size = baseSize;
+    while (target.width > maxWidth && size > minSize) {
+      size = Math.max(minSize, size - 4);
+      target.setFontSize(size);
+    }
   }
 }

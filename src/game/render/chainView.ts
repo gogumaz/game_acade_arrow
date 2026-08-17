@@ -9,6 +9,7 @@ import { DIRECTION_VECTORS } from '../../core/grid';
 import type { Chain, Direction, GridPoint } from '../../core/types';
 import type { ChainView, RunSnapshot } from '../runController';
 import { BLOCK_SHAKE_MS, HINT_BREATH_MS } from '../timing';
+import { FX_TIMING, MAX_FULL_EFFECTS, type ChainVisualState } from '../fx';
 import {
   BOARD_HEIGHT,
   BOARD_ORIGIN,
@@ -47,9 +48,15 @@ export class BoardPainter {
   }
 
   /** 매 프레임 전체 다시 그린다 — 사슬 40개 규모라 부분 갱신이 필요 없다 */
-  draw(run: RunSnapshot, now: number): void {
+  draw(
+    run: RunSnapshot,
+    now: number,
+    options: { readonly motionReduced?: boolean; readonly performanceSimplified?: boolean } = {}
+  ): void {
     const g = this.chains;
     g.clear();
+    const motionReduced = options.motionReduced === true;
+    const simplifyEveryEffect = motionReduced || options.performanceSimplified === true;
 
     const removing = new Set(run.removing.map((r) => r.chainId));
     // ① 진로 프리뷰(가장 아래) — 막힘 여부는 표시하지 않는다 (§2.3)
@@ -58,17 +65,42 @@ export class BoardPainter {
     // ② 정지 상태 사슬
     for (const chain of run.chains) {
       if (chain.state === 'removed' || removing.has(chain.id)) continue;
-      this.drawChain(g, chain, run, now);
+      this.drawChain(g, chain, run, now, motionReduced);
     }
 
+    this.drawBlockerFlash(g, run, now, motionReduced);
+
     // ③ 슬라이드 아웃 중인 사슬 (경로 추종)
-    for (const removal of run.removing) {
+    for (const [removalIndex, removal] of run.removing.entries()) {
+      // EFX-807: 앞선 6개는 본 연출을 유지하고 7번째부터 잔상만 생략한다.
+      const simplified = simplifyEveryEffect || removalIndex >= MAX_FULL_EFFECTS;
       const travel = Math.max(0, removal.exitPath.length);
       const progress = Math.min(1, Math.max(0, (now - removal.startedAtMs) / removal.durationMs));
       const combined = [...removal.points, ...removal.exitPath];
       const offset = progress * travel;
       const moved = removal.points.map((_, i) => lerpPath(combined, i + offset));
-      this.strokePolyline(g, moved, LINE.base, PALETTE.focus, 1 - progress * 0.4);
+      if (!simplified) {
+        // 성공 궤적: 바이올렛 → 시안 길이 비례 잔상. 단일 Graphics라 객체 수가 늘지 않는다.
+        for (let trail = 3; trail >= 1; trail -= 1) {
+          const trailOffset = Math.max(0, offset - trail * 0.16);
+          const trailMoved = removal.points.map((_, i) => lerpPath(combined, i + trailOffset));
+          const color = trail >= 2 ? PALETTE.successTrail : PALETTE.focus;
+          this.strokePolyline(
+            g,
+            trailMoved,
+            LINE.base + trail,
+            color,
+            (0.2 / trail) * (1 - progress)
+          );
+        }
+      }
+      this.strokePolyline(
+        g,
+        moved,
+        LINE.base,
+        simplified ? PALETTE.focus : PALETTE.successTrail,
+        1 - progress * 0.4
+      );
     }
   }
 
@@ -76,19 +108,34 @@ export class BoardPainter {
     g: Phaser.GameObjects.Graphics,
     chain: ChainView,
     run: RunSnapshot,
-    now: number
+    now: number,
+    motionReduced: boolean
   ): void {
     const blocked = chain.state === 'blocked';
     const focused = chain.isFocus;
-    const color = blocked ? PALETTE.blocked : focused ? PALETTE.focus : PALETTE.chain;
-    const width = focused ? LINE.focus : LINE.base;
+    const visualState: ChainVisualState = chain.isHint
+      ? 'hint'
+      : blocked
+        ? 'blocked'
+        : focused
+          ? 'focus'
+          : 'base';
+    const color =
+      visualState === 'hint'
+        ? PALETTE.hint
+        : visualState === 'blocked'
+          ? PALETTE.blocked
+          : visualState === 'focus'
+            ? PALETTE.focus
+            : PALETTE.chain;
+    const width = visualState === 'focus' ? LINE.focus : LINE.base;
 
     // §9.2 실패 — 좌우 진동 ±6px 2회
     let shakeX = 0;
     const block = run.lastBlock;
     if (block !== null && block.chainId === chain.id) {
       const elapsed = now - block.atMs;
-      if (elapsed >= 0 && elapsed < BLOCK_SHAKE_MS) {
+      if (!motionReduced && elapsed >= 0 && elapsed < BLOCK_SHAKE_MS) {
         const phase = (elapsed / BLOCK_SHAKE_MS) * SHAKE_CYCLES * Math.PI * 2;
         shakeX = Math.sin(phase) * SHAKE_PX;
       }
@@ -103,11 +150,42 @@ export class BoardPainter {
 
     // §7.1 힌트 — 앰버 호흡형 외곽선 (주기 1200ms)
     if (chain.isHint) {
-      const breath = 0.45 + 0.45 * (0.5 + 0.5 * Math.sin((now / HINT_BREATH_MS) * Math.PI * 2));
+      const breath = motionReduced
+        ? 0.9
+        : 0.45 + 0.45 * (0.5 + 0.5 * Math.sin((now / HINT_BREATH_MS) * Math.PI * 2));
       this.strokePolyline(g, pts, width + LINE.outline * 4, PALETTE.hint, breath, shakeX);
     }
 
     this.drawArrowHead(g, chain, color, width, shakeX);
+  }
+
+  /** §9.2 실패 100~500ms — 막힌 사슬에서 첫 블로커 방향으로 1회 선형 플래시. */
+  private drawBlockerFlash(
+    g: Phaser.GameObjects.Graphics,
+    run: RunSnapshot,
+    now: number,
+    motionReduced: boolean
+  ): void {
+    const block = run.lastBlock;
+    if (block === null || block.blockers.length === 0) return;
+    const elapsed = now - block.atMs;
+    if (elapsed < 0 || elapsed >= FX_TIMING.bodyMaxMs) return;
+    const from = run.chains.find((chain) => chain.id === block.chainId);
+    const to = run.chains.find((chain) => chain.id === block.blockers[0]);
+    if (from === undefined || to === undefined) return;
+    const a = toScreenXY(
+      from.points[from.points.length - 1].x,
+      from.points[from.points.length - 1].y
+    );
+    const b = toScreenXY(to.points[to.points.length - 1].x, to.points[to.points.length - 1].y);
+    const alpha = motionReduced ? 0.7 : 1 - elapsed / FX_TIMING.bodyMaxMs;
+    g.lineStyle(5, PALETTE.blocked, alpha);
+    g.beginPath();
+    g.moveTo(a.x, a.y);
+    g.lineTo(b.x, b.y);
+    g.strokePath();
+    g.fillStyle(PALETTE.blocked, alpha);
+    g.fillCircle(b.x, b.y, 10);
   }
 
   /** §2.3 대표점 마커 — 화살촉 위 삼각형(본체 1.6배)으로 빠질 방향을 읽게 한다 */

@@ -188,15 +188,26 @@ describe('1-3 구간표 (§6.2 · Q-2 · Q-4)', () => {
 });
 
 describe('1-4 반영 시점·바인딩·배지 (admin §4.3 · R6)', () => {
+  const releasedStoreFields = new Set([
+    'machine.soundVolume',
+    'machine.attractVolume',
+    'machine.nightMute',
+    'machine.motionReduce',
+  ]);
+
   it('`binding === "store"` 행에는 반드시 대기 배지가 있다', () => {
     for (const spec of FIELD_SCHEMA) {
-      if (spec.binding === 'store') expect(spec.pendingUnit).toBeDefined();
+      if (spec.binding === 'store' && !releasedStoreFields.has(spec.id)) {
+        expect(spec.pendingUnit).toBeDefined();
+      }
     }
   });
 
   it('실제로 소비되는 행에는 대기 배지가 없다', () => {
     for (const spec of FIELD_SCHEMA) {
-      if (spec.binding !== 'store') expect(spec.pendingUnit).toBeUndefined();
+      if (spec.binding !== 'store' || releasedStoreFields.has(spec.id)) {
+        expect(spec.pendingUnit).toBeUndefined();
+      }
     }
   });
 

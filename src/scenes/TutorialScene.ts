@@ -36,7 +36,10 @@ export class TutorialScene extends ArrowScene {
   protected paint(snap: FlowSnapshot): void {
     const run = snap.run;
     if (run === null) return;
-    this.board.draw(run, this.app.clock.now());
+    this.board.draw(run, this.app.clock.now(), {
+      motionReduced: this.app.fx.motionReduced,
+      performanceSimplified: this.app.fx.report().simplified,
+    });
     this.message.setText(tutorialPanel().lines[0]);
     this.countdown.setText(`${Math.ceil(snap.countdownMs / 1000)}초 뒤 자동 진행`);
   }

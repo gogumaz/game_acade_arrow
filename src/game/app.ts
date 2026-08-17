@@ -37,6 +37,7 @@ import { SafetyMonitor } from './safety';
 import { SettingsStore } from './settingsDoc';
 import { createSilentSfx, type Sfx } from './sfx';
 import { statsSaveDocument } from './statsDoc';
+import { FxRuntime } from './fx';
 
 export const APP_REGISTRY_KEY = 'arrowOutApp';
 
@@ -51,6 +52,8 @@ export interface AppContext {
   readonly recovery: CrashRecovery;
   readonly storage: Storage;
   readonly sfx: Sfx;
+  /** §9.2·§9.4 — 효과 예산, MOTION REDUCE, 프레임·입력 지연 계측 (WU-07) */
+  readonly fx: FxRuntime;
   readonly clock: Clock;
   /** §11 관리자 페이지 — 8그룹 전 화면의 순수 컨트롤러 (WU-05) */
   readonly admin: AdminController;
@@ -87,6 +90,7 @@ export interface AppOptions {
   readonly wall?: WallClock;
   readonly storage?: Storage;
   readonly sfx?: Sfx;
+  readonly fx?: FxRuntime;
   readonly nowIso?: () => string;
   /** §11.3 N11a·N11b·N11c — `MACHINE SETTINGS`가 저장한 값이 부팅 순서에서 덮어쓴다 */
   readonly coinsPerPlay?: number;
@@ -129,6 +133,7 @@ export function createApp(options: AppOptions = {}): AppContext {
   const wall = options.wall ?? systemWallClock();
   const params = options.params ?? FACTORY_PARAMS;
   const sfx = options.sfx ?? createSilentSfx();
+  const fx = options.fx ?? new FxRuntime();
   const nowIso = options.nowIso ?? ((): string => new Date().toISOString());
 
   // §11.6 — 테스트 플레이 플래그는 이 변수 1개가 전부다 (계획 §9)
@@ -153,6 +158,8 @@ export function createApp(options: AppOptions = {}): AppContext {
     ...(options.continueCoins === undefined ? {} : { continueCoins: options.continueCoins }),
     ...(options.coinUnitPrice === undefined ? {} : { coinUnitPrice: options.coinUnitPrice }),
   });
+  sfx.configure?.(settingsStore.machine);
+  fx.configure(settingsStore.machine);
   settingsStore.mirrorInitialHearts(params.initialHearts);
   // WU-04 P-12가 비워 둔 자리 — 감사 이벤트를 그대로 `audit_log.csv` 1줄로 옮긴다
   const auditLogger = new AuditLogger({
@@ -288,6 +295,11 @@ export function createApp(options: AppOptions = {}): AppContext {
 
   // §10.5 롤오버 3번째 지점(관리자 진입) · §10.6 마커 해제(정상 종료)는 기존 리스너로 얻는다 (P-5)
   const unwatchScreen = flow.onScreenChange((to, from) => {
+    // MOTION REDUCE는 NEXT GAME: 런 진입에서 캡처하고 해당 런 도중에는 바꾸지 않는다.
+    if (to === 'TUTORIAL' || (to === 'RUN' && from !== 'TUTORIAL' && from !== 'CONTINUE')) {
+      fx.beginRun();
+    }
+    if (to === 'RESULT' || to === 'ATTRACT' || to === 'ADMIN') fx.endRun();
     if (to === 'ADMIN') {
       credits.noteAdminEntered();
       // 테스트 플레이 복귀는 **작업 사본을 지우지 않는다** — 진입 절차를 다시 밟지 않는다
@@ -316,6 +328,8 @@ export function createApp(options: AppOptions = {}): AppContext {
     sfx,
     applyParams: (p) => {
       flow.applyParams(toCoreParams(p));
+      sfx.configure?.(p.machine);
+      fx.configure(p.machine);
     },
     leaveAdmin: () => {
       flow.handle('SERVICE');
@@ -379,6 +393,8 @@ export function createApp(options: AppOptions = {}): AppContext {
     credits.setCoinsPerPlay(loaded.machine.coinsPerPlay);
     credits.setContinueCoins(loaded.machine.continueCoins);
     credits.setCoinUnitPrice(loaded.machine.coinUnitPrice);
+    sfx.configure?.(loaded.machine);
+    fx.configure(loaded.machine);
     settingsStore.mirrorInitialHearts(loaded.core.initialHearts);
     // admin §4.3 `RESTART REQUIRED` — 분포 전환 표본 수는 **부팅에서만** 반영된다
     stats.setRingCapacity(loaded.grade.sampleThreshold);
@@ -397,7 +413,10 @@ export function createApp(options: AppOptions = {}): AppContext {
 
   const input = options.input ?? keyboard;
   input.attach();
-  const unsubscribe = input.onAction((pa) => flow.handle(pa.action, pa.player));
+  const unsubscribe = input.onAction((pa) => {
+    fx.noteInput(clock.now());
+    flow.handle(pa.action, pa.player);
+  });
   // P-6 — 누름/뗌 스트림을 **가진 어댑터에서만** 결선한다. 인터페이스는 바뀌지 않았다
   const phaseSource = asPhaseSource(input);
   // §11.6 — 테스트 플레이 중 `G`를 2초 유지하면 편집 화면으로 돌아온다.
@@ -426,6 +445,7 @@ export function createApp(options: AppOptions = {}): AppContext {
     recovery,
     storage,
     sfx,
+    fx,
     clock,
     admin,
     params: paramsStore,
@@ -447,6 +467,7 @@ export function createApp(options: AppOptions = {}): AppContext {
       unsubscribe();
       unsubscribePhase?.();
       input.detach();
+      sfx.dispose?.();
     },
   };
 }

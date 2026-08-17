@@ -351,13 +351,18 @@ export class RunController {
   private onPullResult(result: PullResult): void {
     if (!result.accepted) return;
     if (result.safe === true) {
-      this.sfx.play('slide');
+      const chain = this.requireBoard().chain(result.chainId);
+      this.sfx.play('slide', {
+        comboCentis: this.session.state.comboCentis,
+        segments: Math.max(1, (chain?.points.length ?? 2) - 1),
+        pan: chain === undefined ? 0 : directionPan(headDirection(chain)),
+      });
       this.lastBlock = null;
       this.syncRemovals(this.clock.now());
       this.repairFocus();
       return;
     }
-    this.sfx.play('block');
+    this.sfx.play('block', { pan: blockerPan(this.requireBoard(), result) });
     if (result.charged === true) this.sfx.play('heart');
     this.lastBlock = {
       chainId: result.chainId,
@@ -439,6 +444,21 @@ export class RunController {
     if (board === null) throw new Error('RunController: start()를 먼저 호출한다');
     return board;
   }
+}
+
+function directionPan(direction: Direction): number {
+  if (direction === 'LEFT') return -0.75;
+  if (direction === 'RIGHT') return 0.75;
+  return 0;
+}
+
+function blockerPan(board: Board, result: PullResult): number {
+  const source = board.chain(result.chainId);
+  const blocker = result.blockers?.[0] === undefined ? undefined : board.chain(result.blockers[0]);
+  if (source === undefined || blocker === undefined) return 0;
+  const sourceHead = source.points[source.points.length - 1];
+  const blockerHead = blocker.points[blocker.points.length - 1];
+  return Math.max(-1, Math.min(1, (blockerHead.x - sourceHead.x) / 6));
 }
 
 /** §2.3 진로 프리뷰 — 머리 다음 칸부터 보드 경계까지. 보드 밖 첫 점은 뺀다 */

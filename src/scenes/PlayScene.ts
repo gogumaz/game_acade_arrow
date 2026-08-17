@@ -6,6 +6,7 @@ import type { FlowSnapshot } from '../game/flow';
 import { CSS, FONT_FAMILY, FONT_SIZE, LAYOUT } from '../game/render/boardView';
 import { BoardPainter } from '../game/render/chainView';
 import { Hud } from '../game/render/hud';
+import { FxOverlay } from '../game/render/fxOverlay';
 import { blockedMessage, clearMessage, safePauseMessage } from '../game/render/panels';
 import { BLOCK_SHAKE_MS } from '../game/timing';
 import { ArrowScene } from './ArrowScene';
@@ -16,6 +17,7 @@ const MESSAGE_HOLD_MS = BLOCK_SHAKE_MS * 4;
 export class PlayScene extends ArrowScene {
   private board!: BoardPainter;
   private hud!: Hud;
+  private effects!: FxOverlay;
   private center!: Phaser.GameObjects.Text;
 
   constructor() {
@@ -25,6 +27,7 @@ export class PlayScene extends ArrowScene {
   protected build(): void {
     this.board = new BoardPainter(this);
     this.hud = new Hud(this);
+    this.effects = new FxOverlay(this);
     this.center = this.add
       .text(LAYOUT.centerX, LAYOUT.centerY, '', {
         fontFamily: FONT_FAMILY,
@@ -38,8 +41,16 @@ export class PlayScene extends ArrowScene {
     const run = snap.run;
     if (run === null) return;
     const now = this.app.clock.now();
-    this.board.draw(run, now);
+    const performanceSimplified = this.app.fx.report().simplified;
+    this.board.draw(run, now, {
+      motionReduced: this.app.fx.motionReduced,
+      performanceSimplified,
+    });
     this.hud.update(snap, run, now);
+    this.effects.update(run, now, {
+      motionReduced: this.app.fx.motionReduced,
+      simplified: performanceSimplified,
+    });
 
     // §12.3 SAFE PAUSE — 정지·재개 카운트다운은 다른 어떤 중앙 문구보다 우선한다 (P-7)
     if (snap.safePause.state !== 'idle') {

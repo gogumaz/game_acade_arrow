@@ -85,6 +85,8 @@ export interface AdminView {
   readonly warnings: readonly string[];
   /** 솔버 게이트 배지 — 스텁이면 `[WU-08 대기] SKIPPED` */
   readonly solverBadge: string;
+  /** WU-07 DISPLAY TEST — 0이면 닫힘, 양수면 자동 종료까지 남은 시간 */
+  readonly displayTestRemainingMs: number;
 }
 
 // ── 문구 (admin 부록 A) ───────────────────────────────────────────────────

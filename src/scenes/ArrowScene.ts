@@ -8,6 +8,7 @@
 
 import Phaser from 'phaser';
 import { APP_REGISTRY_KEY, type AppContext } from '../game/app';
+import type { Tier } from '../game/boardSource';
 import type { FlowSnapshot, Screen } from '../game/flow';
 import { CSS } from '../game/render/boardView';
 
@@ -42,6 +43,8 @@ export abstract class ArrowScene extends Phaser.Scene {
   }
 
   update(): void {
+    const now = this.app.clock.now();
+    this.app.fx.frame(now);
     const flow = this.app.flow;
     flow.tick();
     // 관리자 컨트롤러의 시계는 **화면과 무관하게** 흐른다 — 테스트 플레이 관찰(§11.6 결과 5항목)은
@@ -51,6 +54,13 @@ export abstract class ArrowScene extends Phaser.Scene {
     // 전이 직후 한 프레임은 아직 이전 씬이 살아 있다 — 남의 화면을 그리지 않는다
     if (SCENE_FOR_SCREEN[snap.screen] !== this.scene.key) return;
     this.paint(snap);
+    this.app.fx.present(now);
+    this.app.sfx.update?.({
+      screen: snap.screen,
+      nowMs: now,
+      tierIndex: tierIndex(snap.run?.tier),
+      timeRemainingMs: snap.run?.timeRemainingMs ?? null,
+    });
   }
 
   /** 화면 객체 생성 — `create()`에서 1회 */
@@ -64,4 +74,11 @@ export abstract class ArrowScene extends Phaser.Scene {
     if (key === this.scene.key) return;
     this.scene.start(key);
   }
+}
+
+function tierIndex(tier: Tier | undefined): number {
+  if (tier === 'RHYTHM') return 1;
+  if (tier === 'PRESSURE') return 2;
+  if (tier === 'MASTER' || tier === 'ENDLESS') return 3;
+  return 0;
 }

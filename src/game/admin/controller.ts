@@ -30,7 +30,7 @@ import type { HealthReport } from '../health';
 import type { BlockReason, BootNotice } from '../safety';
 import type { InputStatus, PhaseEvent } from '../input';
 import type { RunSnapshot } from '../runController';
-import type { Sfx } from '../sfx';
+import { SFX_NAMES, type Sfx, type SfxName } from '../sfx';
 import type { SettingsStore } from '../settingsDoc';
 import { DangerGate, type DangerRequest, type RiskLevel } from './danger';
 import {
@@ -198,6 +198,8 @@ export class AdminController {
   /** §12.3 — 이번 부팅의 경고 목록. **최초 진입에서 한 번만** 채워진다 (P-1 · P-12) */
   private bootNoticeLines: readonly string[] = [];
   private healthRef: HealthReport | null = null;
+  /** WU-07 DISPLAY TEST — 30초 자동 종료, G 즉시 복귀 */
+  private displayTestUntilMs: number | null = null;
 
   constructor(deps: AdminControllerDeps) {
     this.deps = deps;
@@ -312,6 +314,9 @@ export class AdminController {
 
   tick(): void {
     const now = this.deps.clock.now();
+    if (this.displayTestUntilMs !== null && now >= this.displayTestUntilMs) {
+      this.displayTestUntilMs = null;
+    }
     this.finishDanger(this.danger.tick(now));
     if (this.toastRef !== null && now >= this.toastRef.untilMs) this.toastRef = null;
     if (this.machineSaveAtMs !== null && now >= this.machineSaveAtMs) {
@@ -392,6 +397,11 @@ export class AdminController {
   }
 
   private back(): void {
+    if (this.displayTestUntilMs !== null) {
+      this.displayTestUntilMs = null;
+      this.deps.sfx.play('select');
+      return;
+    }
     if (this.danger.cancel()) {
       this.deps.sfx.play('reject');
       return;
@@ -439,6 +449,14 @@ export class AdminController {
       this.deps.sfx.play('confirm');
       return;
     }
+    if (id.startsWith('sound.')) {
+      const name = id.slice('sound.'.length) as SfxName;
+      if (SFX_NAMES.includes(name)) {
+        this.deps.sfx.play(name);
+        this.toast(`${name.toUpperCase()} 사운드 재생`, 'ok');
+      }
+      return;
+    }
     switch (id) {
       case 'unsaved.save':
         this.unsavedPrompt = false;
@@ -477,6 +495,10 @@ export class AdminController {
         return;
       case 'storage.probe':
         void this.runStorageProbe();
+        return;
+      case 'display.pattern':
+        this.displayTestUntilMs = this.deps.clock.now() + 30000;
+        this.deps.sfx.play('confirm');
         return;
       case 'exit.now':
         void this.exitAndSave();
@@ -1005,6 +1027,8 @@ export class AdminController {
       errors: report === null ? [] : issueLines(report.errors),
       warnings: report === null ? [] : issueLines(report.warnings),
       solverBadge: this.solverBadge(),
+      displayTestRemainingMs:
+        this.displayTestUntilMs === null ? 0 : Math.max(0, this.displayTestUntilMs - now),
     };
   }
 
@@ -1433,14 +1457,12 @@ export class AdminController {
   }
 
   private soundRows(): readonly AdminRow[] {
-    const names = ['select', 'confirm', 'reject', 'coin', 'clear'] as const;
-    return names.map((n) => ({
+    return SFX_NAMES.map((n) => ({
       id: `sound.${n}`,
       label: `PLAY ${n.toUpperCase()}`,
       value: '',
       marker: MARKER.none,
       selectable: true,
-      badge: ADMIN_TEXT.pendingBadge('WU-07'),
     }));
   }
 
@@ -1448,12 +1470,7 @@ export class AdminController {
     return [
       infoRow('display.logical', '논리 해상도', '1920 × 1080'),
       infoRow('display.mode', '화면 모드', '전체화면 키오스크'),
-      infoRow(
-        'display.pattern',
-        '패턴',
-        '안전 영역 · RGB · 백/흑',
-        ADMIN_TEXT.pendingBadge('WU-07')
-      ),
+      menuRow('display.pattern', 'RUN DISPLAY PATTERN', '안전 영역 · RGB · 백/흑 · 폰트'),
       infoRow('display.auto', '자동 종료', '30초 · G 즉시 복귀'),
     ];
   }
