@@ -92,6 +92,16 @@ export default tseslint.config(
     },
   },
 
+  // ── 운영 보조 명령 (Node ESM) ──
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      ecmaVersion: 2022,
+      globals: { ...globals.node },
+    },
+  },
+
   // ── Electron CJS 타입 선언 (tsconfig 프로젝트 밖이라 타입 인식 린트 제외) ──
   {
     files: ['electron/**/*.d.cts'],

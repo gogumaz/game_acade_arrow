@@ -1,0 +1,13 @@
+[
+  {
+    "locationId": "SITE-001",
+    "date": "2026-08-18",
+    "paidPlays": 0,
+    "reattemptOpportunities": 0,
+    "reattemptsWithin10Min": 0,
+    "failedInputs": 0,
+    "focusDisputes": 0,
+    "scheduledMinutes": 0,
+    "unavailableMinutes": 0
+  }
+]
