@@ -23,9 +23,9 @@ import { browserEnvironment, Storage } from '../persist/storage';
 import { AdminController } from './admin/controller';
 import { AuditLogger } from './admin/audit';
 import { ParamsStore } from './admin/paramsDoc';
-import { stubSolverGate } from './admin/solverGate';
+import { realSolverGate } from './admin/solverGate';
 import { testPlayBoardSource, type TestPlaySpec } from './admin/testPlay';
-import { fixtureBoardSource, type BoardRequest, type BoardSource } from './boardSource';
+import { proceduralBoardSource, type BoardRequest, type BoardSource } from './boardSource';
 import { CrashRecovery, type RecoveryResult } from './crashRecovery';
 import { CreditsService } from './creditsService';
 import { FlowMachine, type UiTimings } from './flow';
@@ -97,8 +97,7 @@ export interface AppOptions {
   readonly continueCoins?: number;
   readonly coinUnitPrice?: number | null;
   /**
-   * §11.5 솔버 게이트. 기본은 `stubSolverGate()`(`pending: 'WU-08'`)이고,
-   * **WU-08은 이 인자 1곳만** `realSolverGate(...)`로 바꾸면 ADM-402가 성립한다 (P-7).
+   * §11.5 솔버 게이트. 테스트는 대역을 주입할 수 있고 기본은 WU-08 실물 게이트다.
    */
   readonly solverGate?: SolverGate;
   /** §17 `[보류]` #3 — 실물 재시작·재부팅·종료 채널 */
@@ -228,10 +227,18 @@ export function createApp(options: AppOptions = {}): AppContext {
   storage.register(settingsStore.asSaveDocument());
 
   // §11.6 — 테스트 플레이만 보드 공급원을 갈아 끼운다. `FlowMachine`은 이 라우터 1개만 본다
-  const baseBoards = options.boardSource ?? fixtureBoardSource();
+  const baseBoards =
+    options.boardSource ??
+    proceduralBoardSource({
+      now: () => clock.now(),
+      onFallback: (message) => storage.logError(message),
+    });
   let boardOverride: BoardSource | null = null;
   const boards: BoardSource = {
     next: (req: BoardRequest) => (boardOverride ?? baseBoards).next(req),
+    prepare: (req: BoardRequest) => (boardOverride ?? baseBoards).prepare?.(req),
+    report: (result) => (boardOverride ?? baseBoards).report?.(result),
+    bundle: (boardNumber) => (boardOverride ?? baseBoards).bundle?.(boardNumber) ?? null,
   };
 
   // 관리자 컨트롤러는 flow보다 나중에 만들어지므로 참조를 지연해서 잡는다
@@ -321,13 +328,14 @@ export function createApp(options: AppOptions = {}): AppContext {
     params: paramsStore,
     settings: settingsStore,
     storage,
-    solverGate: options.solverGate ?? stubSolverGate(),
+    solverGate: options.solverGate ?? realSolverGate(),
     credits,
     ranking,
     audit,
     sfx,
     applyParams: (p) => {
       flow.applyParams(toCoreParams(p));
+      baseBoards.configure?.(p);
       sfx.configure?.(p.machine);
       fx.configure(p.machine);
     },
@@ -344,6 +352,7 @@ export function createApp(options: AppOptions = {}): AppContext {
         testPlay = true;
         testPlayReturn = admin?.currentPath ?? [];
         boardOverride = testPlayBoardSource(baseBoards, spec);
+        baseBoards.configure?.(draft);
         flow.applyParams(toCoreParams(draft));
         flow.handle('SERVICE'); // ADMIN → READY (테스트 플레이는 크레딧 없이 시작할 수 있다)
         flow.handle('START');
@@ -351,6 +360,7 @@ export function createApp(options: AppOptions = {}): AppContext {
       stop: () => {
         testPlay = false;
         boardOverride = null;
+        baseBoards.configure?.(live());
         flow.applyParams(toCoreParams(live()));
       },
     },
@@ -390,6 +400,7 @@ export function createApp(options: AppOptions = {}): AppContext {
     // §11.4 — 저장된 파라미터를 코어·서비스에 반영한다. 여기가 `params.csv` → 런타임의 유일한 통로다
     const loaded = live();
     flow.applyParams(toCoreParams(loaded));
+    baseBoards.configure?.(loaded);
     credits.setCoinsPerPlay(loaded.machine.coinsPerPlay);
     credits.setContinueCoins(loaded.machine.continueCoins);
     credits.setCoinUnitPrice(loaded.machine.coinUnitPrice);

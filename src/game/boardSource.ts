@@ -1,13 +1,17 @@
 // 보드 공급 (§6.2 구간표 — 작업 계획 §9 · P-5. **WU-08 생성기가 `BoardSource` 구현만 교체**한다)
 //
-// WU-08이 없는 유닛이라 보드는 **결정적 패턴**으로 만든다. 탐색·난수가 없으므로 생성기가 아니라
-// "손으로 적은 좌표표를 공식으로 압축한 것"이다. 패턴이 성립하는 근거(교차 금지·막힘 관계·
-// 깊이 공식·해법 존재·조작 수 상한)는 아래 주석과 `boardSource.test.ts`의 8항목이 대조한다.
-//
-// 인계면: `next(req)`가 `{ boardNumber, seed }`를 받는 형태로 고정돼 있어, WU-08 도착 시
-// 본문이 `generateBoard(req.seed, tierOf(req.boardNumber))` 한 줄로 바뀐다.
+// 아래 결정적 패턴은 WU-03 회귀·미니 튜토리얼 전용으로 보존한다. 실서비스 공급원은 파일 아래의
+// `proceduralBoardSource()`이며 WU-08 생성·복구·적응 파이프라인을 사용한다.
 
 import { createChain } from '../core/chain';
+import type { AdminParams } from '../core/adminParams';
+import { FACTORY_ADMIN_PARAMS } from '../core/adminParams';
+import {
+  AdaptiveDifficulty,
+  GenerationPipeline,
+  type BoardBundle,
+  type RecoveryReport,
+} from '../core/generator';
 import { Board } from '../core/puzzle';
 import type { Chain, ChainId, GridPoint } from '../core/types';
 
@@ -265,13 +269,26 @@ export interface BoardRequest {
   readonly seed: string;
 }
 
+export interface BoardResult {
+  readonly boardNumber: number;
+  readonly elapsedMs: number;
+  readonly mistakes: number;
+}
+
 export interface BoardSource {
   next(req: BoardRequest): Board;
+  /** 전환 시작과 동시에 다음 보드를 만들어 둔다. 동기 코어이므로 호출 자체가 0.8초 예산 안에 끝난다. */
+  prepare?(req: BoardRequest): void;
+  /** 저장된 관리자 파라미터를 다음 생성부터 적용한다. */
+  configure?(params: AdminParams): void;
+  /** 적응 난이도 최근 창에 클리어 결과를 보고한다. */
+  report?(result: BoardResult): void;
+  bundle?(boardNumber: number): BoardBundle | null;
 }
 
 /** 재현성 시드 — WU-08 생성기가 같은 문자열로 같은 배치를 만들게 된다 (§6.6) */
-export function seedFor(boardNumber: number): string {
-  return `wu03-b${boardNumber}`;
+export function seedFor(boardNumber: number, runSeed = 'wu03'): string {
+  return `${runSeed}-b${boardNumber}`;
 }
 
 /** 보드 번호 → 순환 픽스처. WU-08 도착 시 이 함수 본문만 바뀐다 */
@@ -280,6 +297,63 @@ export function fixtureBoardSource(): BoardSource {
     next(req: BoardRequest): Board {
       const spec = ROTATION[(Math.max(1, req.boardNumber) - 1) % ROTATION.length];
       return buildFixtureBoard(spec, req.boardNumber, req.seed);
+    },
+  };
+}
+
+export interface ProceduralBoardSourceOptions {
+  readonly params?: AdminParams;
+  readonly now?: () => number;
+  readonly onFallback?: (message: string) => void;
+}
+
+/** WU-08 실서비스 공급원 — 생성·복구·선행 캐시·적응 결과를 한 수명주기로 묶는다. */
+export function proceduralBoardSource(options: ProceduralBoardSourceOptions = {}): BoardSource {
+  let params = options.params ?? FACTORY_ADMIN_PARAMS;
+  const adaptive = new AdaptiveDifficulty(params);
+  const pipeline = new GenerationPipeline({
+    params,
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.onFallback === undefined ? {} : { onFallback: options.onFallback }),
+  });
+  const prepared = new Map<string, RecoveryReport>();
+  const bundles = new Map<number, BoardBundle>();
+
+  const keyOf = (req: BoardRequest): string =>
+    `${String(req.boardNumber)}|${req.seed}|${String(adaptive.level)}`;
+  const make = (req: BoardRequest): RecoveryReport =>
+    pipeline.generate(req.boardNumber, req.seed, adaptive.level);
+
+  return {
+    next(req): Board {
+      const key = keyOf(req);
+      const generated = prepared.get(key) ?? make(req);
+      prepared.delete(key);
+      bundles.set(req.boardNumber, generated.bundle);
+      return generated.board;
+    },
+    prepare(req): void {
+      const key = keyOf(req);
+      if (!prepared.has(key)) prepared.set(key, make(req));
+    },
+    configure(next): void {
+      params = next;
+      adaptive.configure(params);
+      pipeline.configure(params);
+      prepared.clear();
+    },
+    report(result): void {
+      const bundle = bundles.get(result.boardNumber);
+      if (bundle === undefined) return;
+      adaptive.record({
+        ...result,
+        targetMs: bundle.vector.targetMs,
+      });
+      // 난이도 단계가 바뀌면 이전 단계로 만든 선행 캐시는 소비하지 않는다.
+      prepared.clear();
+    },
+    bundle(boardNumber): BoardBundle | null {
+      return bundles.get(boardNumber) ?? null;
     },
   };
 }

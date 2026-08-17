@@ -911,10 +911,10 @@ describe('13-9 뷰 (admin §4.2·§4.3)', () => {
     expect(row?.applyTiming).toBe('NEXT CHARGE');
   });
 
-  it('미완료 유닛에만 대기 배지가 붙는다 (R6 · WU-07 완료 반영)', () => {
+  it('완료된 WU-07·WU-08 필드에는 대기 배지가 없다 (R6)', () => {
     const rig = makeAdmin();
     rig.admin.goTo(['PARAMS', 'P_TIERS']);
-    expect(rig.admin.view().rows[0].badge).toBe('[WU-08 대기]');
+    expect(rig.admin.view().rows[0].badge).toBeUndefined();
     rig.admin.goTo(['MACHINE']);
     expect(rig.admin.view().rows[0].badge).toBeUndefined();
   });

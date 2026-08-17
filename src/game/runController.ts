@@ -26,6 +26,8 @@ import { PullBuffer, type PullOutcome } from './inputBuffer';
 import type { Sfx } from './sfx';
 import { BOARD_TRANSITION_MS } from './timing';
 
+let runSeedSerial = 0;
+
 export interface ChainView {
   readonly id: ChainId;
   readonly points: readonly GridPoint[];
@@ -120,6 +122,8 @@ export class RunController {
   private transitionUntilMs: number | null = null;
   private endState: { reason: EndReason } | null = null;
   private tutorialChain: ChainId | null = null;
+  private boardStartedAtMs = 0;
+  private runSeed = 'wu03';
 
   constructor(deps: RunControllerDeps) {
     this.session = deps.session;
@@ -142,7 +146,10 @@ export class RunController {
 
   /** 런 시작. `board`를 주면 그것을 쓴다(미니 튜토리얼 전용 보드) */
   start(boardNumber: number, board?: Board): void {
-    const next = board ?? this.boardSource.next({ boardNumber, seed: seedFor(boardNumber) });
+    runSeedSerial += 1;
+    this.runSeed = `run-${String(Math.floor(this.clock.now()))}-${String(runSeedSerial)}`;
+    const next =
+      board ?? this.boardSource.next({ boardNumber, seed: seedFor(boardNumber, this.runSeed) });
     this.session.start(next);
     this.adoptBoard(next, boardNumber);
   }
@@ -207,6 +214,16 @@ export class RunController {
       this.sfx.play(perfect ? 'perfect' : 'clear');
       // §4.2 보드 전환 0.8초 — **그동안에도 런 타이머는 계속 흐른다**(session.tick을 계속 부른다)
       this.transitionUntilMs = now + BOARD_TRANSITION_MS;
+      this.boardSource.report?.({
+        boardNumber: this.boardNumber,
+        elapsedMs: Math.max(0, now - this.boardStartedAtMs),
+        mistakes: this.session.state.mistakesThisBoard,
+      });
+      const nextNumber = this.boardNumber + 1;
+      this.boardSource.prepare?.({
+        boardNumber: nextNumber,
+        seed: seedFor(nextNumber, this.runSeed),
+      });
     }
     // 종료는 `TickResult.ended`만 봐서는 놓친다: 실패 경로(`pull()`의 ③B④⑤⑦⑧⑨)가 그 호출 안에서
     // 런을 끝내면 다음 `tick()`은 `phase === 'ended'`에서 곧바로 되돌아 나오며 `ended`를 담지 않는다.
@@ -415,7 +432,7 @@ export class RunController {
     const nextNumber = this.boardNumber + 1;
     const board = this.boardSource.next({
       boardNumber: nextNumber,
-      seed: seedFor(nextNumber),
+      seed: seedFor(nextNumber, this.runSeed),
     });
     this.session.loadBoard(board);
     this.adoptBoard(board, nextNumber);
@@ -432,6 +449,7 @@ export class RunController {
     this.lastBlock = null;
     this.lastClear = null;
     this.transitionUntilMs = null;
+    this.boardStartedAtMs = this.clock.now();
     this.buffer.clear();
     this.hintCtl.reset();
     // 보드 적재 직후에 이미 `removing`인 사슬이 있을 수 있다 — §3.8 자동 보정은 `start()`·

@@ -12,7 +12,96 @@
 // 있다. `validateAdminParams()`가 그 타입을 쓰는데 eslint 규칙 ①이 `src/core/` → `src/game/`
 // import를 금지하기 때문이다. 여기에는 **구현**만 둔다.
 
-import type { SolverGate, SolverGateResult } from '../../core/adminParams';
+import type { AdminParams, ParamTier, SolverGate, SolverGateResult } from '../../core/adminParams';
+import { generateBoard } from '../../core/generator';
+import { releaseBlockReasons, solveBoard } from '../../core/solver';
+import { contrastRatio } from '../fx';
+import { PALETTE } from '../render/boardView';
+
+const REPRESENTATIVE_BOARD: Readonly<Record<ParamTier, number>> = {
+  WARMUP: 1,
+  RHYTHM: 4,
+  PRESSURE: 7,
+  MASTER: 10,
+  ENDLESS: 13,
+};
+
+const TIERS: readonly ParamTier[] = ['WARMUP', 'RHYTHM', 'PRESSURE', 'MASTER', 'ENDLESS'];
+const MINIMUM_CHAIN_CONTRAST = Math.min(
+  ...[PALETTE.chain, PALETTE.focus, PALETTE.blocked, PALETTE.hint].map((color) =>
+    contrastRatio(color, PALETTE.background)
+  )
+);
+
+export interface RealSolverGateOptions {
+  readonly now?: () => number;
+}
+
+/** §11.5 — 5구간 × 대표 시드 3개를 실제 생성·전수 탐색하고 3초 안에 판정한다. */
+export function realSolverGate(options: RealSolverGateOptions = {}): SolverGate {
+  const now = options.now ?? (() => performance.now());
+  return {
+    validate(params: AdminParams): SolverGateResult {
+      const started = now();
+      const failures: Array<{
+        readonly tier: ParamTier;
+        readonly seed: number;
+        readonly reason: 'no_solution' | 'deadlock' | 'over_target_time';
+      }> = [];
+      let boardsChecked = 0;
+
+      for (const tier of TIERS) {
+        for (let seed = 1; seed <= 3; seed += 1) {
+          const generated = generateBoard(
+            REPRESENTATIVE_BOARD[tier],
+            `admin-${tier}-${String(seed)}`,
+            params
+          );
+          const solved = solveBoard(generated.board);
+          const vector = generated.bundle.vector;
+          const limits = params.tiers[tier];
+          const vectorMismatch =
+            !inside(vector.chains, limits.chains) ||
+            !inside(vector.safeMoves, limits.safeMoves) ||
+            !inside(vector.maxDepth, limits.depth);
+          const release = releaseBlockReasons({
+            hasSolution: solved.hasSolution,
+            runtimeMismatchCount: 0,
+            deadlockStates: solved.deadlockStates,
+            minimumContrastRatio: MINIMUM_CHAIN_CONTRAST,
+            frameP99Ms: generated.bundle.bot.frameP99Ms,
+            botP95Ms: generated.bundle.bot.p95Ms,
+            targetMs: generated.bundle.vector.targetMs,
+            focusMoveBound: generated.bundle.focusMoveBound,
+          });
+          boardsChecked += 1;
+          if (vectorMismatch || release.includes('NO_SOLUTION')) {
+            failures.push({ tier, seed, reason: 'no_solution' });
+          } else if (release.includes('DEADLOCK')) {
+            failures.push({ tier, seed, reason: 'deadlock' });
+          } else if (release.includes('BOT_OVER_TARGET')) {
+            failures.push({ tier, seed, reason: 'over_target_time' });
+          }
+        }
+      }
+
+      const elapsedMs = Math.max(0, now() - started);
+      if (elapsedMs > 3000) {
+        failures.push({ tier: 'ENDLESS', seed: 3, reason: 'over_target_time' });
+      }
+      return {
+        ok: failures.length === 0,
+        failures,
+        elapsedMs,
+        boardsChecked,
+      };
+    },
+  };
+}
+
+function inside(value: number, range: { readonly min: number; readonly max: number }): boolean {
+  return value >= range.min && value <= range.max;
+}
 
 /** WU-08 도착 전까지의 자리 — 오류를 만들지 않지만 통과했다고도 하지 않는다 */
 export function stubSolverGate(): SolverGate {

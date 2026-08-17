@@ -225,7 +225,7 @@ type FieldType = 'int' | 'float' | 'percent' | 'seconds' | 'toggle' | 'enum' | '
 type ApplyTiming = 'LIVE' | 'NEXT GAME' | 'NEXT CHARGE' | 'RESTART REQUIRED';
 
 /** 값을 실제로 소비하는 곳. `store`는 저장만 되고 아직 소비처가 없다는 뜻이다 */
-type FieldBinding = 'core' | 'flow' | 'stats' | 'credits' | 'store';
+type FieldBinding = 'core' | 'flow' | 'stats' | 'credits' | 'generator' | 'store';
 
 type PendingUnit = 'WU-07' | 'WU-08';
 
@@ -347,9 +347,8 @@ function tierField(tier: ParamTier, axis: TierAxis): FieldSpec {
     ],
     unit: range.unit,
     applyTiming: 'NEXT GAME',
-    binding: 'store',
+    binding: 'generator',
     separator: '~',
-    pendingUnit: 'WU-08',
     advanced: true,
   };
 }
@@ -389,42 +388,42 @@ export const FIELD_SCHEMA: readonly FieldSpec[] = [
       step: 1,
       options: DIFFICULTY_PRESETS,
     },
-    { pendingUnit: 'WU-08', note: '구간표 20행을 통째로 갈아 끼운다' }
+    { binding: 'generator', note: '구간표 20행을 통째로 갈아 끼운다' }
   ),
   plainField(
     'difficulty.adaptive',
     'ADAPTIVE DIFFICULTY',
     '난이도',
     { type: 'toggle', min: 0, max: 1, step: 1 },
-    { pendingUnit: 'WU-08' }
+    { binding: 'generator' }
   ),
   plainField(
     'difficulty.window',
     'ADAPTIVE WINDOW',
     '난이도',
     { type: 'int', min: 1, max: 5, step: 1 },
-    { unit: '보드', pendingUnit: 'WU-08', advanced: true }
+    { unit: '보드', binding: 'generator', advanced: true }
   ),
   plainField(
     'difficulty.upPercent',
     'ADAPTIVE UP THRESHOLD',
     '난이도',
     { type: 'percent', min: 50, max: 90, step: 5 },
-    { unit: '%', pendingUnit: 'WU-08', advanced: true }
+    { unit: '%', binding: 'generator', advanced: true }
   ),
   plainField(
     'difficulty.downPercent',
     'ADAPTIVE DOWN THRESHOLD',
     '난이도',
     { type: 'percent', min: 110, max: 200, step: 5 },
-    { unit: '%', pendingUnit: 'WU-08', advanced: true }
+    { unit: '%', binding: 'generator', advanced: true }
   ),
   plainField(
     'difficulty.downMistakes',
     'ADAPTIVE DOWN MISTAKES',
     '난이도',
     { type: 'int', min: 1, max: 5, step: 1 },
-    { unit: '회', pendingUnit: 'WU-08', advanced: true }
+    { unit: '회', binding: 'generator', advanced: true }
   ),
   // ── 구간표 20 (5구간 × 4축 × MIN/MAX = 수치 40) ──
   ...tierRows(),

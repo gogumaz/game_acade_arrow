@@ -437,11 +437,16 @@ describe('14-5b 저장 검증 우회 경로가 없다 (D-1 · ADM-401 보장)', 
 });
 
 describe('14-6 솔버 게이트 결선 (ADM-402 배선 — 교체 지점 1곳)', () => {
-  it('기본 게이트는 스텁이라 `pending`이다', async () => {
+  it('기본 게이트는 WU-08 실물이며 대표 보드 15개를 통과한다', async () => {
     const rig = makeApp();
     await rig.app.ready;
     rig.send('SERVICE');
-    expect(rig.app.admin.validate().solver.pending).toBe('WU-08');
+    const solver = rig.app.admin.validate().solver;
+    expect(solver).toMatchObject({
+      ok: true,
+      boardsChecked: 15,
+    });
+    expect(solver).not.toHaveProperty('pending');
   });
 
   it('`createApp({ solverGate })` 하나로 실제 차단이 성립한다', async () => {

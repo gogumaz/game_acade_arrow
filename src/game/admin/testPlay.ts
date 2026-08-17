@@ -36,13 +36,16 @@ export const TIER_REPRESENTATIVE_BOARD: Readonly<Record<ParamTier, number>> = {
  * 진행 중에도 같은 구간이 반복된다 (§11.6 "구간·시드를 직접 지정해 완전 재현").
  */
 export function testPlayBoardSource(base: BoardSource, spec: TestPlaySpec): BoardSource {
+  const map = (req: BoardRequest): BoardRequest => ({
+    boardNumber: TIER_REPRESENTATIVE_BOARD[spec.tier] + (req.boardNumber - 1),
+    seed: `testplay-${spec.tier}-${String(spec.seed)}-${String(req.boardNumber)}`,
+  });
   return {
     next(req: BoardRequest) {
-      const mapped = TIER_REPRESENTATIVE_BOARD[spec.tier] + (req.boardNumber - 1);
-      return base.next({
-        boardNumber: mapped,
-        seed: `testplay-${spec.tier}-${String(spec.seed)}-${String(req.boardNumber)}`,
-      });
+      return base.next(map(req));
+    },
+    prepare(req: BoardRequest) {
+      base.prepare?.(map(req));
     },
   };
 }
