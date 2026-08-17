@@ -24,6 +24,7 @@ import type { BoardHistogramEntry, RunMarker, StatsModel, StatsSnapshot } from '
 import {
   FILES,
   SCHEMA_VERSION,
+  STATS_HEADER,
   parseStatsCsv,
   sanitizeField,
   statsToCsv,
@@ -236,6 +237,23 @@ export function parseStatsDocCsv(csv: string): StatsSnapshot {
   return snap;
 }
 
+/**
+ * WU-06 P-1 · §4 — `stats.csv`를 신뢰할 수 있는가.
+ *
+ * 기준: **v1 머리행이 읽히고 `#meters`·`#session` 섹션 헤더가 살아 있는가.** 이 파서는
+ * 알 수 없는 섹션·손상 행을 통째로 무시하므로(§12.1), 파일이 반쯤 잘려 코인 미터·점유
+ * 시간이 통째로 0이 돼도 조용히 "정상"으로 보인다. 매출 카운터가 0으로 되살아나는 것이
+ * 이 유닛이 막아야 할 손실이라 두 섹션을 필수로 본다 (SAV-701).
+ *
+ * `#histogram`·`#scores`·`#run`은 **없는 것이 정상**이다(표본 0 · 마커 없음).
+ */
+export function isValidStatsCsv(csv: string): boolean {
+  if (parseStatsCsv(csv) === null) return false;
+  const lines = csv.split(/\r?\n/).map((l) => l.trim());
+  if (lines[0] !== STATS_HEADER) return false;
+  return lines.includes(METERS_HEADER) && lines.includes(SESSION_HEADER);
+}
+
 /** WU-01 `Storage.register()`에 그대로 등록한다 */
 export function statsSaveDocument(model: StatsModel): SaveDocument {
   return {
@@ -244,5 +262,6 @@ export function statsSaveDocument(model: StatsModel): SaveDocument {
     apply: (csv) => {
       model.loadSnapshot(parseStatsDocCsv(csv));
     },
+    validate: (csv) => isValidStatsCsv(csv),
   };
 }

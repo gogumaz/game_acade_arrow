@@ -93,6 +93,20 @@ interface ParamsParseResult {
   readonly droppedRows: number;
 }
 
+/**
+ * WU-06 P-1 · §4 — `params.csv`를 신뢰할 수 있는가.
+ *
+ * 기준 3개: **헤더 일치 · 버전 행 존재 · 손상 행 0**. 파서가 관용적(손상 행만 버리고 계속)이라
+ * "파싱이 끝났다"는 사실만으로는 손상을 알 수 없어, 여기서 `droppedRows`를 판정에 쓴다.
+ * 버전 불일치는 손상이 **아니다** — 유효한 옛 파일이므로 날짜 백업 경로로 간다 (SAV-703).
+ */
+export function isValidParamsCsv(csv: string): boolean {
+  const lines = csv.split(/\r?\n/).map((l) => l.trim());
+  if (lines[0] !== PARAMS_HEADER) return false;
+  if (!lines.some((l) => l.split(',')[1]?.trim() === PARAM_VERSION_KEY)) return false;
+  return parseParamsCsv(csv).droppedRows === 0;
+}
+
 export function parseParamsCsv(csv: string): ParamsParseResult {
   const byKey = new Map<string, FieldCell>();
   for (const cell of cellsOfFile('params')) byKey.set(cell.key, cell);
@@ -176,6 +190,10 @@ export class ParamsStore {
       apply: (csv) => {
         this.apply(csv);
       },
+      validate: (csv) => isValidParamsCsv(csv),
+      // SAV-703 — 버전이 다르면 저장 계층이 `params.csv.<날짜>.bak`을 남기고 공장값을 굳힌다.
+      // 경고(`versionMismatch`)는 지우지 않는다: OVERVIEW가 이번 부팅 내내 사유를 보여 준다
+      needsVersionBackup: () => this.mismatch,
     };
   }
 }

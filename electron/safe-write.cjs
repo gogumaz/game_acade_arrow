@@ -2,6 +2,7 @@
 //
 //   1) 단일 직렬 쓰기 큐 + 5단계 안전 쓰기 + `.bak` 폴백 읽기 (§9.3 · SAV-001 · SAV-002)
 //   2) 치명 오류 60초 창 판정 (§9.4)
+//   3) 잔존 `.tmp` 복구 · `.bak` 1세대 · 디스크 여유 · `machine.json` 조립 (WU-06 T1)
 //
 // main.cjs는 `electron`을 require 하므로 통째로는 단위 테스트할 수 없다. 파일 시스템을
 // 주입받는 팩토리로 분리해 단계별 크래시 주입까지 자동 판정한다 (작업 계획 D-3).
@@ -15,6 +16,18 @@ const FILE_NAME_PATTERN = /^[\w.-]+$/;
 const CREDIT_LOG_FILE = 'credit_log.csv';
 // 6번째 `reason` 컬럼은 §10.2 원복 사유용이다 — 렌더러(src/persist/csv.ts)와 반드시 같아야 한다
 const CREDIT_LOG_HEADER = 'timestamp,action,source,paidBalance,eventBalance,reason';
+
+/** §12.1 — 안전 쓰기가 만드는 파생 확장자. `.bak`은 **1세대만** 유지한다 (WU-06 P-3) */
+const TMP_SUFFIX = '.tmp';
+const BAK_SUFFIX = '.bak';
+
+/** §12.3 STORAGE LOW — 남은 공간이 이 값 미만이면 경고한다 (WU-06 착수 Q3-a) */
+const STORAGE_LOW_BYTES = 200 * 1024 * 1024;
+
+/** §12.1 기기 식별 파일 (WU-06 P-11) */
+const MACHINE_FILE = 'machine.json';
+/** §12.3 치명 오류 60초 창을 재부팅 너머로 잇는 파일 (WU-06 P-9 · ADM-306) */
+const CRASH_WINDOW_FILE = 'crash_window.json';
 
 /** §9.4 — 60초 안에 3회 치명 오류면 자동 재실행을 멈춘다 */
 const FATAL_LIMIT = 3;
@@ -72,24 +85,86 @@ function createSafeWriter({ fsp, dir, ensureDir }) {
   async function safeWrite(name, content) {
     await ensure();
     const finalPath = filePath(name);
-    const tmpPath = `${finalPath}.tmp`;
-    const bakPath = `${finalPath}.bak`;
+    const tmpPath = `${finalPath}${TMP_SUFFIX}`;
+    const bakPath = `${finalPath}${BAK_SUFFIX}`;
 
     // 1
     await fsp.writeFile(tmpPath, content, 'utf8');
     // 2
     const readBack = await fsp.readFile(tmpPath, 'utf8');
     if (readBack !== content) throw new Error(`tmp verify failed: ${name}`);
-    // 3
-    try {
-      await fsp.rename(finalPath, bakPath);
-    } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
+    // 3 — **`.bak` 회전은 1세대다** (WU-06 P-3). 대상 자체가 `.bak`이면 `.bak.bak`을 만들지
+    // 않는다: 2세대가 생기면 복구 판정이 어느 쪽을 마지막 정상값으로 볼지 알 수 없게 된다
+    if (!name.endsWith(BAK_SUFFIX)) {
+      try {
+        await fsp.rename(finalPath, bakPath);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
     }
     // 4
     await fsp.rename(tmpPath, finalPath);
     // 5
     await fsp.access(finalPath);
+  }
+
+  /**
+   * 부팅 시 잔존 `.tmp` 정리 (§12.2 · ADM-301 — WU-06 P-2).
+   *
+   * 5단계가 3~4단계 사이에서 차단되면 본 파일이 없고 `.tmp`만 남는다. 그 `.tmp`는 2단계
+   * 검증까지 통과한 내용이므로 본 파일로 **승격**한다. 본 파일이 살아 있으면 그 `.tmp`는
+   * 1~2단계에서 죽은 미완성 조각이라 **삭제**한다.
+   *
+   * 승격한 내용이 그래도 손상이면 렌더러 `validate()`가 `.bak`으로 한 번 더 넘긴다 (P-1).
+   */
+  async function recoverStrays() {
+    const promoted = [];
+    const removed = [];
+    let names;
+    try {
+      names = await fsp.readdir(dir);
+    } catch {
+      return { promoted, removed };
+    }
+    for (const entry of names) {
+      if (typeof entry !== 'string' || !entry.endsWith(TMP_SUFFIX)) continue;
+      const base = entry.slice(0, -TMP_SUFFIX.length);
+      if (base === '') continue;
+      const tmpPath = path.join(dir, entry);
+      const basePath = path.join(dir, base);
+      let baseExists = true;
+      try {
+        await fsp.access(basePath);
+      } catch {
+        baseExists = false;
+      }
+      try {
+        if (baseExists) {
+          await fsp.unlink(tmpPath);
+          removed.push(entry);
+        } else {
+          await fsp.rename(tmpPath, basePath);
+          promoted.push(base);
+        }
+      } catch {
+        /* 개별 실패가 부팅을 막지 않는다 */
+      }
+    }
+    promoted.sort();
+    removed.sort();
+    return { promoted, removed };
+  }
+
+  /** §12.3 STORAGE LOW — 남은 바이트. `statfs`가 없거나 실패하면 `null`(판정 보류) */
+  async function freeBytes() {
+    if (typeof fsp.statfs !== 'function') return null;
+    try {
+      const s = await fsp.statfs(dir);
+      const bytes = Number(s.bsize) * Number(s.bavail);
+      return Number.isFinite(bytes) ? bytes : null;
+    } catch {
+      return null;
+    }
   }
 
   /** 본 파일이 없으면 `.bak`으로 자동 폴백한다 (§9.3 · SAV-002) */
@@ -100,7 +175,7 @@ function createSafeWriter({ fsp, dir, ensureDir }) {
     } catch (err) {
       if (err.code !== 'ENOENT') throw err;
       try {
-        return await fsp.readFile(`${finalPath}.bak`, 'utf8');
+        return await fsp.readFile(`${finalPath}${BAK_SUFFIX}`, 'utf8');
       } catch {
         return null;
       }
@@ -131,33 +206,119 @@ function createSafeWriter({ fsp, dir, ensureDir }) {
     write: (name, content) => enqueue(() => safeWrite(name, String(content))),
     read: (name) => enqueue(() => read(name)),
     append: (name, line) => enqueue(() => append(name, line)),
+    /** 부팅 정리·디스크 여유도 같은 큐를 통과한다 (§12.2 단일 큐) */
+    recoverStrays: () => enqueue(() => recoverStrays()),
+    freeBytes: () => enqueue(() => freeBytes()),
     /** 큐를 거치지 않는 원형 — 단계별 판정용 */
     safeWriteDirect: safeWrite,
+    recoverStraysDirect: recoverStrays,
   };
 }
 
 /**
- * 치명 오류 60초 창 (§9.4).
+ * 치명 오류 60초 창 (§9.4 · ADM-306).
  * 60초 안에 3회면 자동 재실행을 중지하고 SERVICE REQUIRED 화면을 유지한다.
+ *
+ * WU-06 P-9 — 창을 **재부팅 너머로** 잇는다. 메모리에만 두면 프로세스째 죽는 종류의 치명
+ * 오류에서 매번 `count = 1`로 되살아나 `SERVICE REQUIRED`에 영원히 닿지 않는다.
  */
 function createCrashWindow(options = {}) {
   const limit = options.limit ?? FATAL_LIMIT;
   const windowMs = options.windowMs ?? FATAL_WINDOW_MS;
   const now = options.now ?? Date.now;
-  const times = [];
+  const load = typeof options.load === 'function' ? options.load : () => [];
+  const save = typeof options.save === 'function' ? options.save : () => undefined;
+
+  let times = [];
+  try {
+    const raw = load();
+    if (Array.isArray(raw)) {
+      times = raw
+        .map(Number)
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b);
+    }
+  } catch {
+    times = [];
+  }
+
+  function prune(t) {
+    while (times.length > 0 && t - times[0] > windowMs) times.shift();
+  }
+
+  function persist() {
+    try {
+      save([...times]);
+    } catch {
+      /* 창 저장 실패가 부팅을 막지 않는다 */
+    }
+  }
+
+  function verdict() {
+    return { count: times.length, serviceRequired: times.length >= limit };
+  }
 
   return {
     /** 치명 오류 1건을 기록하고 자동 재실행 가능 여부를 판정한다 */
     record() {
       const t = now();
       times.push(t);
-      while (times.length > 0 && t - times[0] > windowMs) times.shift();
-      return { count: times.length, serviceRequired: times.length >= limit };
+      prune(t);
+      persist();
+      return verdict();
+    },
+    /** 부팅 판정 — 저장된 창을 지금 시각으로 정리하고 자동 재실행 가능 여부를 돌려준다 */
+    boot() {
+      prune(now());
+      persist();
+      return verdict();
+    },
+    /** 정비 후 복귀 — 창을 비운다 */
+    reset() {
+      times = [];
+      persist();
     },
     get count() {
       return times.length;
     },
+    get recorded() {
+      return [...times];
+    },
   };
+}
+
+/**
+ * §12.1 `machine.json` 본문 조립 — **순수 함수**다 (WU-06 P-11).
+ * 시각·난수·`process`는 호출자가 넣는다. 그래서 필드 구성을 단위 판정할 수 있다.
+ */
+function machineInfo(input) {
+  const versions = input.versions ?? {};
+  return {
+    machineId: String(input.machineId),
+    appVersion: String(input.appVersion ?? ''),
+    electron: String(versions.electron ?? ''),
+    chrome: String(versions.chrome ?? ''),
+    node: String(versions.node ?? ''),
+    platform: String(input.platform ?? ''),
+    arch: String(input.arch ?? ''),
+    osRelease: String(input.osRelease ?? ''),
+    // §17 `[보류]` #1 — Serial 실물이 붙기 전까지 입력 보드는 키보드다
+    ioBoard: String(input.ioBoard ?? 'keyboard [보류]'),
+    updatedAt: String(input.updatedAt),
+  };
+}
+
+/** 기기 최초 부팅 1회만 만들어 `machine.json`에 굳는 식별자 */
+function newMachineId(randomHex) {
+  return `AO-${String(randomHex)
+    .replace(/[^0-9a-fA-F]/g, '')
+    .slice(0, 12)
+    .toUpperCase()}`;
+}
+
+/** §12.3 — 남은 공간이 200MB 미만인가. `null`(측정 불가)은 경고하지 않는다 */
+function isStorageLow(freeBytes, threshold = STORAGE_LOW_BYTES) {
+  return typeof freeBytes === 'number' && Number.isFinite(freeBytes) && freeBytes < threshold;
 }
 
 module.exports = {
@@ -167,7 +328,15 @@ module.exports = {
   FATAL_LIMIT,
   FATAL_WINDOW_MS,
   SYSTEM_ERROR_RESTART_MS,
+  TMP_SUFFIX,
+  BAK_SUFFIX,
+  STORAGE_LOW_BYTES,
+  MACHINE_FILE,
+  CRASH_WINDOW_FILE,
   sanitizeName,
   createSafeWriter,
   createCrashWindow,
+  machineInfo,
+  newMachineId,
+  isStorageLow,
 };

@@ -7,6 +7,7 @@ import Phaser from 'phaser';
 import type { FlowSnapshot } from '../flow';
 import { tipFor } from '../grade';
 import type { RankingEntry } from '../rankingStore';
+import { paidBlockedMessage } from '../safety';
 import {
   CSS,
   FONT_FAMILY,
@@ -56,8 +57,17 @@ export function attractPanel(snap: FlowSnapshot, coinsPerPlay: number): PanelTex
   }
 }
 
+/**
+ * §12.4 — 유료 플레이가 막혀 있으면 어트랙트·READY가 사유를 표시한다 (WU-06 P-5).
+ * 문제·영향·다음 행동 3요소는 `paidBlockedMessage()`가 만든다.
+ */
+export function paidBlockedLine(snap: FlowSnapshot): string | null {
+  return snap.paidBlockReason === null ? null : paidBlockedMessage(snap.paidBlockReason);
+}
+
 /** §8.4 — 가격과 다음 행동을 함께, 지시는 1개만 */
-export function readyPanel(coinsPerPlay: number): PanelText {
+export function readyPanel(coinsPerPlay: number, blocked: string | null = null): PanelText {
+  if (blocked !== null) return { title: 'READY', lines: [blocked, '크레딧은 그대로 유지됩니다'] };
   return { title: 'READY', lines: [`${coinsPerPlay} CREDIT — START를 누르세요`] };
 }
 
@@ -128,6 +138,14 @@ export function blockedMessage(): string {
 
 export function clearMessage(perfect: boolean, bonus: number): string {
   return perfect ? `PERFECT · +${bonus.toLocaleString('en-US')}` : 'CLEAR';
+}
+
+/**
+ * §12.3 SAFE PAUSE — 보드 위 중앙 문구 (WU-06 P-7).
+ * 정지 중에는 사유를, 해제 후에는 남은 초를 보여 준다. 연출은 WU-07이다.
+ */
+export function safePauseMessage(snap: FlowSnapshot): string {
+  return snap.safePause.text;
 }
 
 const MAX_LINES = 12;

@@ -226,6 +226,10 @@ export interface StatusInput {
   readonly coinPriceUnset: boolean;
   /** 고착된 입력이 있는가 */
   readonly stuckInput: boolean;
+  /** §12.3 — 저장 공간 200MB 미만 (WU-06 P-8). 측정 불가면 생략 */
+  readonly storageLow?: boolean;
+  /** §12.1 — 부팅에서 공장값으로 시작했다 (FACTORY DATA LOADED · WU-06 P-1) */
+  readonly factoryDataLoaded?: boolean;
 }
 
 export const OVERALL_GLYPH: Readonly<Record<OverallStatus, string>> = {
@@ -244,7 +248,9 @@ export function overallStatus(i: StatusInput): OverallStatus {
     i.clockChanged ||
     i.paramsVersionMismatch ||
     i.coinPriceUnset ||
-    i.stuckInput
+    i.stuckInput ||
+    i.storageLow === true ||
+    i.factoryDataLoaded === true
   ) {
     return 'CHECK';
   }
@@ -263,5 +269,7 @@ export function statusReasons(i: StatusInput): readonly string[] {
   if (i.paramsVersionMismatch) out.push('PARAM DATA VERSION 불일치 · 공장값 적용');
   if (i.coinPriceUnset) out.push('COIN UNIT PRICE 미설정 · ESTIMATED GROSS 숨김');
   if (i.stuckInput) out.push('STUCK INPUT · 배선/스위치 확인');
+  if (i.storageLow === true) out.push('STORAGE LOW · 남은 공간 200MB 미만 · 저장 경로 확인');
+  if (i.factoryDataLoaded === true) out.push('FACTORY DATA LOADED · 저장 파일을 읽지 못했습니다');
   return out;
 }

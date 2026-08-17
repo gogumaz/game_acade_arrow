@@ -26,6 +26,8 @@ import { FILES, type SaveFileName } from '../../persist/csv';
 import type { Storage } from '../../persist/storage';
 import type { CreditBalance } from '../creditsService';
 import type { Grade } from '../grade';
+import type { HealthReport } from '../health';
+import type { BlockReason, BootNotice } from '../safety';
 import type { InputStatus, PhaseEvent } from '../input';
 import type { RunSnapshot } from '../runController';
 import type { Sfx } from '../sfx';
@@ -122,6 +124,23 @@ export interface AdminControllerDeps {
   readonly system?: AdminSystemPort;
   readonly testPlay?: AdminTestPlayPort;
   readonly runSnapshot?: () => RunSnapshot | null;
+  /**
+   * §12.3 · §12.4 — 부팅 경고(BACKUP RESTORED · FACTORY DATA LOADED · PARAM 버전)와
+   * 유료 차단 사유의 유일한 출처 (WU-06 P-5). 넘기지 않으면 경고도 차단 표시도 없다.
+   */
+  readonly safety?: AdminSafetyPort;
+  /**
+   * §12.3 — 메인 프로세스 상태(STORAGE LOW · 치명 오류 창). 가정 (라)에 따라 **부팅 시와
+   * 관리자 진입 시** 다시 읽는다. 브라우저 개발 모드는 null이다 (WU-06 P-8).
+   */
+  readonly health?: () => Promise<HealthReport | null>;
+}
+
+/** `SafetyMonitor`가 그대로 만족하는 최소 표면 */
+export interface AdminSafetyPort {
+  reason(): BlockReason | null;
+  consumeBootNotices(): readonly BootNotice[];
+  setHealth(report: HealthReport | null): void;
 }
 
 /** 실행이 실패했을 때 어떤 종류로 감사 로그를 남길지 (admin §13 "성공·실패 모두") */
@@ -174,6 +193,11 @@ export class AdminController {
   private testSpec: TestPlaySpec = { tier: 'WARMUP', seed: 1 };
   private entered = false;
   private cachedRows: readonly AdminRow[] = [];
+  /** ADM-302 · SAV-702 — 저장이 실패한 채 복구 화면에 서 있는가 (P-13) */
+  private saveFailedPrompt = false;
+  /** §12.3 — 이번 부팅의 경고 목록. **최초 진입에서 한 번만** 채워진다 (P-1 · P-12) */
+  private bootNoticeLines: readonly string[] = [];
+  private healthRef: HealthReport | null = null;
 
   constructor(deps: AdminControllerDeps) {
     this.deps = deps;
@@ -196,8 +220,13 @@ export class AdminController {
     this.unsavedPrompt = false;
     this.exitAtMs = null;
     this.entered = true;
+    this.saveFailedPrompt = false;
     this.serial.setStatus(this.deps.inputStatus?.() ?? 'connected');
     void this.runStorageProbe();
+    // 부팅 경고는 **동기적으로** 흡수한다 — 진입 직후 그린 OVERVIEW가 경고를 놓치면 안 된다
+    this.absorbBootNotices();
+    // 가정 (라) — STORAGE LOW·치명 오류 창은 관리자 진입마다 다시 읽는다
+    void this.refreshHealth();
     this.cursor.reset(this.rows());
     this.audit('ADMIN_ENTER', {
       target: 'ADMIN HOME',
@@ -367,6 +396,11 @@ export class AdminController {
       this.deps.sfx.play('reject');
       return;
     }
+    // P-13 — `G`는 저장 실패 화면을 벗어나지 않는다 (ADM-302 "관리자 화면을 닫지 않는다")
+    if (this.saveFailedPrompt) {
+      this.deps.sfx.play('reject');
+      return;
+    }
     if (this.unsavedPrompt) {
       this.unsavedPrompt = false;
       this.deps.sfx.play('reject');
@@ -437,6 +471,9 @@ export class AdminController {
         return;
       case 'testplay.start':
         this.startTestPlay();
+        return;
+      case 'savefailed.retry':
+        void this.retrySave();
         return;
       case 'storage.probe':
         void this.runStorageProbe();
@@ -642,7 +679,15 @@ export class AdminController {
       case 'system.restart':
       case 'system.reboot':
       case 'system.shutdown': {
+        // ADM-307 — **모든 저장이 성공한 뒤에만** OS 액션을 실행한다 (`exitAndSave()`와
+        // 같은 가드 · 검증 F-1). 메인 `drainQueue()`는 실패를 삼키므로 여기가 마지막 검사다
+        const failuresBefore = this.deps.storage.saveFailureCount;
         await this.deps.storage.saveAll();
+        if (this.deps.storage.saveFailureCount > failuresBefore) {
+          this.noteSaveFailure(request.label);
+          this.audit('SYSTEM_ACTION', { target: request.label, result: 'save_failed' });
+          return;
+        }
         const result = await this.runSystemAction(request.id);
         this.audit('SYSTEM_ACTION', { target: request.label, result });
         this.toast(`${request.label} — ${result}`, result === 'ok' ? 'ok' : 'warn');
@@ -698,9 +743,7 @@ export class AdminController {
     this.saveStateRef = 'SAVING';
     const ok = await this.deps.storage.backup(FILES.params);
     if (!ok) {
-      this.saveStateRef = 'SAVE FAILED';
-      this.deps.sfx.play('reject');
-      this.toast(ADMIN_TEXT.savePathHint, 'error');
+      this.noteSaveFailure(`backup ${FILES.params}`);
       this.audit('PARAM_SAVE', {
         target: 'GAME PARAMETERS',
         after: changes,
@@ -714,10 +757,8 @@ export class AdminController {
     await this.deps.storage.saveNow(FILES.params);
     await this.deps.storage.saveNow(FILES.settings);
     if (this.deps.storage.saveFailureCount > failuresBefore) {
-      // ADM-302 — 관리자 화면을 닫지 않고 오류·재시도를 제공한다
-      this.saveStateRef = 'SAVE FAILED';
-      this.deps.sfx.play('reject');
-      this.toast(ADMIN_TEXT.savePathHint, 'error');
+      // ADM-302 — 관리자 화면을 닫지 않고 오류·재시도를 제공한다 (P-13)
+      this.noteSaveFailure(`${FILES.params} / ${FILES.settings}`);
       this.audit('PARAM_SAVE', {
         target: 'GAME PARAMETERS',
         after: changes,
@@ -765,7 +806,12 @@ export class AdminController {
 
   private async flushMachineSave(): Promise<void> {
     this.saveStateRef = 'SAVING';
+    const failuresBefore = this.deps.storage.saveFailureCount;
     await this.deps.storage.saveNow(FILES.settings);
+    if (this.deps.storage.saveFailureCount > failuresBefore) {
+      this.noteSaveFailure(FILES.settings);
+      return;
+    }
     this.markSaved();
   }
 
@@ -784,6 +830,40 @@ export class AdminController {
   private markSaved(): void {
     this.saveStateRef = 'SAVED';
     this.lastSavedStamp = formatStamp(this.deps.nowIso());
+    this.saveFailedPrompt = false;
+  }
+
+  /**
+   * SAV-702 — 저장 실패를 한 곳에서 처리한다: 상태 · 복구 화면 · 소리 · 토스트 ·
+   * `error_YYYY-MM-DD.log` (메인 프로세스 `app:logError`).
+   */
+  private noteSaveFailure(what: string): void {
+    this.saveStateRef = 'SAVE FAILED';
+    this.saveFailedPrompt = true;
+    this.deps.sfx.play('reject');
+    this.toast(ADMIN_TEXT.savePathHint, 'error');
+    this.deps.storage.logError(`SAVE FAILED ${what}`);
+    this.cursor.reset(this.rows());
+  }
+
+  /**
+   * ADM-302 — 실패한 저장을 그대로 다시 시도한다. 성공하면 복구 화면을 닫고,
+   * 다시 실패하면 화면을 유지한다 (재시도 횟수 제한은 두지 않는다 — 운영자가 판단한다).
+   */
+  async retrySave(): Promise<boolean> {
+    this.saveStateRef = 'SAVING';
+    const failuresBefore = this.deps.storage.saveFailureCount;
+    await this.deps.storage.saveAll();
+    if (this.deps.storage.saveFailureCount > failuresBefore) {
+      this.noteSaveFailure('retry');
+      this.audit('PARAM_SAVE', { target: 'RETRY SAVE', result: 'write_failed' });
+      return false;
+    }
+    this.markSaved();
+    this.deps.sfx.play('confirm');
+    this.toast(ADMIN_TEXT.saved(this.lastSavedStamp), 'ok');
+    this.audit('PARAM_SAVE', { target: 'RETRY SAVE', result: 'ok' });
+    return true;
   }
 
   /** admin §3.2 — 모든 저장이 성공한 뒤에만 복귀한다 (ADM-307) */
@@ -793,9 +873,7 @@ export class AdminController {
     await this.deps.storage.saveAll();
     if (this.deps.storage.saveFailureCount > failuresBefore) {
       // ADM-307 — 모든 저장이 성공한 뒤에만 나간다. 실패하면 화면을 유지한다
-      this.saveStateRef = 'SAVE FAILED';
-      this.deps.sfx.play('reject');
-      this.toast(ADMIN_TEXT.savePathHint, 'error');
+      this.noteSaveFailure('EXIT & SAVE');
       this.audit('ADMIN_EXIT', { target: 'ADMIN HOME', result: 'failed' });
       return false;
     }
@@ -846,6 +924,36 @@ export class AdminController {
     this.probe = await probeStorage(this.deps.storage.backend);
   }
 
+  /**
+   * §12.3 — 메인 프로세스 상태를 다시 읽고 부팅 경고를 **한 번만** 흡수한다.
+   *
+   * `consumeBootNotices()`는 첫 호출에서만 목록을 돌려주므로(부팅당 1회 · P-12), 여기서
+   * 받은 줄을 컨트롤러가 들고 있는 동안 OVERVIEW가 몇 번을 다시 그려도 같은 목록을 본다.
+   */
+  private async refreshHealth(): Promise<void> {
+    this.healthRef = (await this.deps.health?.()) ?? null;
+    this.deps.safety?.setHealth(this.healthRef);
+    this.absorbBootNotices();
+  }
+
+  /**
+   * 경고 목록을 컨트롤러가 들고 있는다. `SafetyMonitor`는 부팅당 1회만 내주므로
+   * (P-12), 여기 담아 둬야 OVERVIEW를 몇 번 다시 그려도 같은 목록이 보인다.
+   */
+  private absorbBootNotices(): void {
+    const notices = this.deps.safety?.consumeBootNotices() ?? [];
+    if (notices.length > 0) this.bootNoticeLines = notices.map((n) => n.text);
+  }
+
+  /** §12.3 — 이번 부팅 경고 목록 (표시·판정용) */
+  get bootNotices(): readonly string[] {
+    return this.bootNoticeLines;
+  }
+
+  get health(): HealthReport | null {
+    return this.healthRef;
+  }
+
   get serialState(): SerialState {
     return this.serial;
   }
@@ -864,12 +972,14 @@ export class AdminController {
       ioConnected: (this.deps.inputStatus?.() ?? 'connected') !== 'disconnected',
       storageWritable: this.probe === null ? true : this.probe.writable,
       memoryBackend: kind === 'memory',
-      fatalErrorsIn60s: 0,
-      backupRestored: false,
+      fatalErrorsIn60s: this.healthRef?.fatalCount ?? 0,
+      backupRestored: this.bootNoticeLines.some((l) => l.startsWith('BACKUP RESTORED')),
       clockChanged: this.deps.credits.view().clockChangedCount > 0,
       paramsVersionMismatch: this.deps.params.versionMismatch,
       coinPriceUnset: this.deps.credits.coinUnitPrice === null,
       stuckInput: this.inputTest.stuckSignals(this.deps.clock.now()).length > 0,
+      storageLow: this.healthRef?.storageLow === true,
+      factoryDataLoaded: this.bootNoticeLines.some((l) => l.startsWith('FACTORY DATA LOADED')),
     };
   }
 
@@ -988,9 +1098,28 @@ export class AdminController {
   }
 
   rows(): readonly AdminRow[] {
-    const built = this.unsavedPrompt ? this.unsavedRows() : this.rowsFor(this.currentNode());
+    const built = this.saveFailedPrompt
+      ? this.saveFailedRows()
+      : this.unsavedPrompt
+        ? this.unsavedRows()
+        : this.rowsFor(this.currentNode());
     this.cachedRows = built;
     return built;
+  }
+
+  /**
+   * ADM-302 · SAV-702 — 저장 실패 복구 화면 (P-13).
+   *
+   * 화면을 **닫지 않는다.** `H`는 같은 저장을 다시 시도하고, `G`는 아무 데로도 이동하지
+   * 않는다. 저장 경로가 죽은 채 관리자에서 나가면 편집분이 조용히 사라지기 때문이다.
+   */
+  private saveFailedRows(): readonly AdminRow[] {
+    return [
+      infoRow('savefailed.head', ADMIN_TEXT.saveFailedTitle, ''),
+      infoRow('savefailed.stay', '화면 유지', ADMIN_TEXT.saveFailedStay),
+      infoRow('savefailed.test', '저장소 점검', ADMIN_TEXT.storageTestHint),
+      menuRow('savefailed.retry', ADMIN_TEXT.saveRetry),
+    ];
   }
 
   private unsavedRows(): readonly AdminRow[] {
@@ -1123,7 +1252,33 @@ export class AdminController {
         this.deps.params.versionMismatch ? '불일치 · 공장값' : 'ok'
       ),
       infoRow('ov.saved', '마지막 저장', this.lastSavedStamp === '' ? '—' : this.lastSavedStamp),
+      // §12.4 — 유료 차단 사유. 차단이 아니면 `—`
+      infoRow('ov.paidblock', '유료 플레이', this.paidBlockText()),
+      // §12.3 — 부팅 복구 경고 (BACKUP RESTORED / FACTORY DATA LOADED / PARAM 버전)
+      infoRow(
+        'ov.boot',
+        '부팅 경고',
+        this.bootNoticeLines.length === 0
+          ? ADMIN_TEXT.noBootNotice
+          : this.bootNoticeLines.join(' · ')
+      ),
+      infoRow('ov.storagelow', '저장 공간', this.storageText()),
     ];
+  }
+
+  /** §12.4 — 차단 중이면 사유를, 아니면 `—` */
+  private paidBlockText(): string {
+    const reason = this.deps.safety?.reason() ?? null;
+    return reason === null ? '허용' : ADMIN_TEXT.paidBlocked(reason);
+  }
+
+  private storageText(): string {
+    const health = this.healthRef;
+    if (health === null) return '—';
+    if (health.storageLow) return ADMIN_TEXT.storageLow;
+    return health.freeBytes === null
+      ? '—'
+      : `${String(Math.round(health.freeBytes / (1024 * 1024)))} MB 남음`;
   }
 
   private salesStatsRows(): readonly AdminRow[] {
@@ -1338,7 +1493,13 @@ export class AdminController {
         '마지막 저장',
         this.lastSavedStamp === '' ? '—' : this.lastSavedStamp
       ),
-      infoRow('storage.checksum', '체크섬 · .bak 복구', '—', ADMIN_TEXT.pendingBadge('WU-07')),
+      infoRow(
+        'storage.recovery',
+        '.bak 복구',
+        this.bootNoticeLines.length === 0 ? '이번 부팅 없음' : this.bootNoticeLines.join(' · ')
+      ),
+      infoRow('storage.free', '남은 공간', this.storageText()),
+      infoRow('storage.checksum', '체크섬', '—', ADMIN_TEXT.pendingBadge('WU-07')),
       menuRow('storage.probe', 'RUN STORAGE TEST'),
     ];
   }
@@ -1371,6 +1532,8 @@ export class AdminController {
       menuRow('system.reboot', 'REBOOT MACHINE (H 3초)'),
       menuRow('system.shutdown', 'SHUTDOWN MACHINE (H 3초)'),
       menuRow('exit.now', 'RETURN TO GAME'),
+      // §12.1 — 기기 카드는 선택 불가 정보 행이라 위 4개 명령의 커서 순서를 바꾸지 않는다
+      ...this.machineRows(),
     ];
   }
 
@@ -1385,6 +1548,32 @@ export class AdminController {
       FILES.playLog,
     ];
     return files.map((f) => infoRow(`data.${f}`, f, '등록됨'));
+  }
+
+  /**
+   * §12.1 `machine.json` 기기 카드 (WU-06 P-11).
+   *
+   * `DATA & LOGS`가 아니라 `SYSTEM ACTIONS`에 붙인 이유: `DATA & LOGS`는 **저장 파일 7종
+   * 목록**이라는 계약이 WU-05 판정으로 고정돼 있다(행 수 7). `machine.json`은 CSV 저장
+   * 문서가 아니라 메인 프로세스가 쓰는 기기 식별 카드이므로 시스템 화면이 제자리다.
+   */
+  private machineRows(): readonly AdminRow[] {
+    const m = this.healthRef?.machine ?? null;
+    return [
+      infoRow('machine.json.id', 'machine.json · MACHINE ID', m === null ? '—' : m.machineId),
+      infoRow(
+        'machine.json.ver',
+        'APP / ELECTRON / NODE',
+        m === null ? '—' : `${m.appVersion} / ${m.electron} / ${m.node}`
+      ),
+      infoRow(
+        'machine.json.os',
+        'PLATFORM / OS',
+        m === null ? '—' : `${m.platform} ${m.arch} · ${m.osRelease}`
+      ),
+      infoRow('machine.json.io', 'I/O BOARD', m === null ? '—' : m.ioBoard),
+      infoRow('machine.json.at', '기록 시각', m === null ? '—' : m.updatedAt),
+    ];
   }
 
   private resetRows(tag: string, label: string): readonly AdminRow[] {
@@ -1427,6 +1616,11 @@ export class AdminController {
 
   get saveState(): SaveState {
     return this.saveStateRef;
+  }
+
+  /** ADM-302 — 저장 실패 복구 화면에 서 있는가 (P-13) */
+  get isSaveFailedPrompt(): boolean {
+    return this.saveFailedPrompt;
   }
 
   get currentPath(): readonly string[] {

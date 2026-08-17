@@ -232,7 +232,13 @@ export class CreditsService implements CreditsPort {
    */
   refund(amount: number, source: ChargeSource, reason: string): void {
     if (source !== 'paid' && source !== 'event') return; // 'none'·'free'는 되돌릴 것이 없다
-    const r = this.wallet.refund(amount, source);
+    const pendingNow = this.pending;
+    // 이월 V-2 — 되돌릴 금액의 권위는 **실제 차감액**(`pending.amount`)이다. 호출자가 넘긴
+    // `COINS PER PLAY`는 결제 이후 관리자가 값을 바꾸면 실제 차감액과 어긋난다 (§11.3 반영
+    // 시점은 "다음 결제"). 마커가 가리키는 결제가 아니면 인자를 그대로 쓴다
+    const applied =
+      pendingNow !== null && pendingNow.source === source ? pendingNow.amount : amount;
+    const r = this.wallet.refund(applied, source);
     this.stats.noteRefund(source, r.applied);
     const pending = this.pending;
     if (pending !== null && pending.source === source) {
@@ -389,6 +395,9 @@ export class CreditsService implements CreditsPort {
       this.appendCreditLog(line).then(
         () => {
           this.logFailStreak = 0;
+          // §12.4 · WU-06 P-5 — 기록이 한 번이라도 성공하면 차단을 **해제**한다.
+          // WU-04는 신호를 켜기만 했고 끄는 경로가 없어 재부팅 전에는 영영 막혀 있었다
+          this.blocked = null;
         },
         (err: unknown) => {
           this.noteLogFailure(err);

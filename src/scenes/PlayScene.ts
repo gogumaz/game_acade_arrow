@@ -6,7 +6,7 @@ import type { FlowSnapshot } from '../game/flow';
 import { CSS, FONT_FAMILY, FONT_SIZE, LAYOUT } from '../game/render/boardView';
 import { BoardPainter } from '../game/render/chainView';
 import { Hud } from '../game/render/hud';
-import { blockedMessage, clearMessage } from '../game/render/panels';
+import { blockedMessage, clearMessage, safePauseMessage } from '../game/render/panels';
 import { BLOCK_SHAKE_MS } from '../game/timing';
 import { ArrowScene } from './ArrowScene';
 
@@ -40,6 +40,13 @@ export class PlayScene extends ArrowScene {
     const now = this.app.clock.now();
     this.board.draw(run, now);
     this.hud.update(snap, run, now);
+
+    // §12.3 SAFE PAUSE — 정지·재개 카운트다운은 다른 어떤 중앙 문구보다 우선한다 (P-7)
+    if (snap.safePause.state !== 'idle') {
+      this.center.setColor(CSS.hint);
+      this.center.setText(safePauseMessage(snap));
+      return;
+    }
 
     // §8.1 — 보드 위 중앙 문구는 클리어·퍼펙트·실패 3종만 허용된다
     const clear = run.lastClear;

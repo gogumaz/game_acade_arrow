@@ -26,6 +26,13 @@ import { NameEntryModel } from './nameEntry';
 import type { RankingEntry } from './rankingStore';
 import { RankingStore } from './rankingStore';
 import { RunController, type RunSnapshot } from './runController';
+import {
+  SafePauseModel,
+  closedDoorSensor,
+  type DoorSensorPort,
+  type SafePauseView,
+} from './safePause';
+import { openPaidPlayGate, type BlockReason, type PaidPlayGate } from './safety';
 import type { Sfx } from './sfx';
 import {
   ATTRACT_PANELS,
@@ -96,6 +103,13 @@ export interface FlowSnapshot {
    * 성립한다 — 결과 요약(`result`)은 RESULT 진입 시점에야 만들어지기 때문이다.
    */
   readonly endReason: EndReason | null;
+  /**
+   * §12.4 — 유료 시작이 막혀 있는 사유. `null`이면 평소대로다.
+   * 어트랙트·READY가 이 값 하나로 차단 문구를 낸다 (P-5).
+   */
+  readonly paidBlockReason: BlockReason | null;
+  /** §12.3 SAFE PAUSE — 정지·카운트다운 상태 (P-7) */
+  readonly safePause: SafePauseView;
 }
 
 export interface FlowDeps {
@@ -131,6 +145,28 @@ export interface FlowDeps {
    * (미저장 작업 보호 · admin §2.2).
    */
   readonly adminIdleGuard?: () => boolean;
+  /**
+   * §12.4 유료 플레이 차단 게이트 (P-5). 넘기지 않으면 항상 통과라 WU-03 동작 그대로다.
+   * `startPaidRun()`의 **첫 줄**이 유일한 검사 지점이다 — 우회 경로를 만들지 않는다.
+   */
+  readonly paidGate?: PaidPlayGate;
+  /**
+   * §12.3 SAFE PAUSE — 도어 신호. 실물은 §17 `[보류]`이고 기본은 항상 닫힘이다 (P-7).
+   */
+  readonly door?: DoorSensorPort;
+  /**
+   * 이월 F-3 — **OS 로컬 날짜** `YYYY-MM-DD`. 랭킹 등록 날짜와 `BEST TODAY`가 같은 기준을
+   * 쓰게 하는 유일한 입구다. 기본값은 `nowIso()`의 날짜부라 WU-03 동작과 동일하다.
+   */
+  readonly localDate?: () => string;
+  /**
+   * §12.3 — 런 중 `SERVICE` 키를 SAFE PAUSE 토글로 쓸 것인가 (가정 (나)).
+   *
+   * **기본값은 false**다. WU-03이 "런 중 SERVICE는 무시"를 계약으로 고정했고(§2.7 · admin §2.2)
+   * 그 판정이 지금도 살아 있다. 실기 하네스(정비 키 스위치)가 붙을 때 이 플래그를 켜면
+   * 배선이 완성되며, 그 전까지 SAFE PAUSE의 실동작 경로는 도어 포트와 `safePauseNow()`다.
+   */
+  readonly serviceSafePause?: boolean;
 }
 
 type ScreenListener = (to: Screen, from: Screen) => void;
@@ -152,6 +188,12 @@ export class FlowMachine {
   private readonly uiTimings: () => UiTimings;
   private readonly adminInput: ((action: InputAction) => void) | null;
   private readonly adminIdleGuard: () => boolean;
+  private readonly paidGate: PaidPlayGate;
+  private readonly door: DoorSensorPort;
+  private readonly serviceSafePause: boolean;
+  private readonly localDate: () => string;
+  /** §12.3 — 런 타이머 정지·3초 재개는 이 모델 1개가 전부다 (P-7) */
+  private readonly safePause: SafePauseModel;
   private readonly listeners = new Set<ScreenListener>();
   private readonly traceLog: string[] = [];
 
@@ -189,6 +231,14 @@ export class FlowMachine {
     this.uiTimings = deps.uiTimings ?? ((): UiTimings => DEFAULT_UI_TIMINGS);
     this.adminInput = deps.adminInput ?? null;
     this.adminIdleGuard = deps.adminIdleGuard ?? ((): boolean => true);
+    this.paidGate = deps.paidGate ?? openPaidPlayGate();
+    this.door = deps.door ?? closedDoorSensor();
+    this.serviceSafePause = deps.serviceSafePause ?? false;
+    this.localDate = deps.localDate ?? ((): string => this.nowIso().slice(0, 10));
+    this.safePause = new SafePauseModel({
+      onPause: () => this.controller?.pause(),
+      onResume: () => this.controller?.resume(),
+    });
     this.enteredAtMs = deps.clock.now();
     this.lastInputAtMs = deps.clock.now();
   }
@@ -287,6 +337,8 @@ export class FlowMachine {
         if (action !== 'BUTTON2' && action !== 'START') this.requireController().handle(action);
         return;
       case 'RUN':
+        // §12.3 — SAFE PAUSE 중에는 게임 조작이 보드에 닿지 않는다 (정비 중 오조작 방지)
+        if (this.safePause.active) return;
         if (action !== 'START') this.requireController().handle(action);
         return;
       case 'CONTINUE':
@@ -356,7 +408,8 @@ export class FlowMachine {
       countdownMs: this.countdownMs(now),
       attractPanel: this.attractPanel(now),
       ranking: this.ranking.top(),
-      bestToday: this.ranking.bestOf(this.nowIso().slice(0, 10)),
+      // 이월 F-3 — `BEST TODAY`는 **로컬 날짜** 기준이다 (UTC 자정에 오늘이 바뀌면 안 된다)
+      bestToday: this.ranking.bestOf(this.localDate()),
       run: this.controller === null ? null : this.controller.snapshot(),
       result: this.resultSummary,
       nameEntry:
@@ -365,6 +418,8 @@ export class FlowMachine {
           : { value: model.value, cursor: model.cursor, remainingMs: model.remainingMs(now) },
       paidPlays: this.paidPlaysCount,
       endReason: this.controller?.ended?.reason ?? this.resultSummary?.endReason ?? null,
+      paidBlockReason: this.paidGate.reason(),
+      safePause: this.safePause.view(now),
     };
   }
 
@@ -378,14 +433,69 @@ export class FlowMachine {
     if (this.current === 'ATTRACT' && this.credits.canStart()) this.go('READY');
   }
 
-  /** §2.7 — 어트랙트·시작 화면에서만 관리자로 진입한다. 그 밖에서는 무시 */
+  /**
+   * §2.7 — 어트랙트·시작 화면에서만 관리자로 진입한다.
+   *
+   * §12.3 · 가정 (나) — **런 중에는 SAFE PAUSE 토글**이다. 진행 중인 런을 버리고 관리자로
+   * 보내면 플레이어가 낸 크레딧이 사라지므로, 정비 중 정지·재개만 허용한다.
+   */
   private serviceKey(): void {
     if (this.current === 'ATTRACT' || this.current === 'READY') {
       this.adminReturn = this.current;
       this.go('ADMIN');
       return;
     }
-    if (this.current === 'ADMIN') this.leaveAdmin();
+    if (this.current === 'ADMIN') {
+      this.leaveAdmin();
+      return;
+    }
+    // WU-03 계약 — 런 중 SERVICE는 기본적으로 **무시**된다. 정비 키 스위치가 붙는 실기에서만
+    // `serviceSafePause`로 켠다 (가정 (나) · 이월)
+    if (!this.serviceSafePause) return;
+    if (this.current === 'RUN' || this.current === 'TUTORIAL') this.toggleSafePause();
+  }
+
+  /**
+   * SERVICE 1회 = 정지, 다시 1회 = 해제(3초 카운트다운). 도어 정지는 SERVICE로 풀지 않는다.
+   * 공개 메서드다 — 실기 어댑터·테스트가 키 배선 없이도 SAFE PAUSE를 실행할 수 있다.
+   */
+  toggleSafePause(): void {
+    if (this.safePause.state === 'idle') {
+      this.safePause.trigger('service');
+      this.sfx.play('reject');
+      return;
+    }
+    if (this.safePause.state === 'paused' && this.safePause.reason === 'service') {
+      this.safePause.release(this.clock.now());
+      this.sfx.play('confirm');
+    }
+  }
+
+  /** §12.3 — 도어 신호를 상태 모델에 옮긴다. 실물은 §17 `[보류]`라 기본은 항상 닫힘이다 */
+  private pollDoor(): void {
+    const open = this.door.isOpen();
+    if (open) {
+      if (this.safePause.reason !== 'door') this.safePause.trigger('door');
+      return;
+    }
+    if (this.safePause.state === 'paused' && this.safePause.reason === 'door') {
+      this.safePause.release(this.clock.now());
+    }
+  }
+
+  /** §12.3 — 도어·정비 어댑터가 직접 부르는 정지/해제 (키 배선과 무관한 실동작 경로) */
+  safePauseNow(reason: 'service' | 'door' = 'service'): boolean {
+    if (this.current !== 'RUN' && this.current !== 'TUTORIAL') return false;
+    return this.safePause.trigger(reason);
+  }
+
+  releaseSafePause(): boolean {
+    return this.safePause.release(this.clock.now());
+  }
+
+  /** §12.3 — 화면이 그리는 SAFE PAUSE 상태 */
+  get safePauseView(): SafePauseView {
+    return this.safePause.view(this.clock.now());
   }
 
   private handleAttract(action: InputAction): void {
@@ -405,6 +515,14 @@ export class FlowMachine {
       return;
     }
     if (action !== 'BUTTON1') return;
+    // QA-1(착수 §9 추기) — 컨티뉴도 **유료 결제**이므로 차단 조건이 서 있으면 받지 않는다.
+    // 기록 불가 상태의 추가 결제 금지(§12.4 취지). 낸 크레딧은 지갑에 그대로 남고,
+    // `G`(BUTTON2) 포기·시간 초과 → RESULT 흐름은 위에서 그대로 살아 있다
+    if (!this.isTestPlay() && this.paidGate.reason() !== null) {
+      this.sfx.play('reject');
+      this.traceLog.push('paid-blocked');
+      return;
+    }
     // 작업 계획 Q-6 — 코인은 적립만 하고 **확정은 BUTTON1**이다 (§10.2 "확정 입력 직후" 차감)
     if (!this.credits.canContinue()) {
       this.sfx.play('reject');
@@ -435,6 +553,15 @@ export class FlowMachine {
 
   /** §10.2 — 차감은 **START 유효 판정 직후, 미니 튜토리얼 진입 전**이다 (CRD-601) */
   private startPaidRun(): void {
+    // §12.4 — 차단 조건이 하나라도 서 있으면 **지갑에 손대기 전에** 거절한다.
+    // 크레딧은 그대로 남고(§12.4 "들어온 크레딧은 유지"), 화면이 사유를 표시한다 (P-5).
+    // 관리자 테스트 플레이는 **면제**다(계획 §5 · FIX-2) — 크레딧 없는 진단 경로이므로
+    // 저장 불가·치명 반복이 서 있을수록 오히려 실행할 수 있어야 한다 (§11.6)
+    if (!this.isTestPlay() && this.paidGate.reason() !== null) {
+      this.sfx.play('reject');
+      this.traceLog.push('paid-blocked');
+      return;
+    }
     if (!this.credits.canStart()) {
       this.sfx.play('reject');
       return;
@@ -486,6 +613,13 @@ export class FlowMachine {
 
   private tickTutorial(now: number): void {
     const controller = this.requireController();
+    this.pollDoor();
+    if (this.safePause.active) {
+      const resumed = this.safePause.tick(now);
+      this.lastInputAtMs = now;
+      // 미니 튜토리얼은 런 타이머가 이미 멈춰 있다 — 카운트다운만 흘려보낸다
+      if (!resumed) return;
+    }
     controller.tick();
     const done = controller
       .snapshot()
@@ -495,6 +629,14 @@ export class FlowMachine {
 
   private tickRun(now: number): void {
     const controller = this.requireController();
+    // §12.3 SAFE PAUSE — 정지·카운트다운 중에는 런 타이머도 방치 종료도 돌지 않는다.
+    // 무입력 시계를 계속 밀어 주지 않으면 정비를 마치고 돌아온 순간 5분 종료가 터진다
+    this.pollDoor();
+    if (this.safePause.active) {
+      const resumed = this.safePause.tick(now);
+      this.lastInputAtMs = now;
+      if (!resumed) return;
+    }
     // §2.7 다 — 무입력 종료는 런 타이머보다 **먼저** 본다. 같은 프레임에 둘 다 성립하면
     // 방치 종료가 이기고 CONTINUE를 건너뛴다 (SES-212)
     if (now - this.lastInputAtMs >= RUN_IDLE_END_MS) {
@@ -538,7 +680,9 @@ export class FlowMachine {
         board: summary.boardReached,
         maxComboCentis: summary.maxComboCentis,
         continues: summary.continues,
-        registeredAt: this.nowIso(),
+        // F-3 — 날짜부는 **로컬 날짜**, 시각부는 `nowIso()` 그대로다. 기본 주입에서는
+        // 두 값이 같은 문자열이라 WU-03 판정이 한 줄도 바뀌지 않는다
+        registeredAt: `${this.localDate()}${this.nowIso().slice(10)}`,
       });
       if (rank !== null) this.onRankingChanged();
     }
@@ -581,6 +725,8 @@ export class FlowMachine {
 
   private go(next: Screen): void {
     const from = this.current;
+    // 런이 끝났으면 정지 상태를 들고 다니지 않는다 (다음 런이 멈춘 채로 시작하면 안 된다)
+    if (next !== 'RUN' && next !== 'TUTORIAL') this.safePause.reset();
     if (next === 'RESULT' && from !== 'RESULT') this.buildResult();
     this.current = next;
     this.enteredAtMs = this.clock.now();

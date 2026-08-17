@@ -118,6 +118,16 @@ export const ADMIN_TEXT = {
   solverFailed: (n: number): string => `실패 ${String(n)}건`,
   pendingBadge: (unit: string): string => `[${unit} 대기]`,
   holdBadge: '[보류]',
+  // ── WU-06 §12.3 저장·안전장치 ──
+  factoryDataLoaded: 'FACTORY DATA LOADED · 저장 파일을 읽지 못해 공장값으로 시작했습니다',
+  storageLow: 'STORAGE LOW · 남은 공간 200MB 미만 · 저장 경로 확인',
+  /** SAV-702 · ADM-302 — SAVE FAILED 복구 화면 (P-13) */
+  saveFailedTitle: 'SAVE FAILED · 저장 경로 확인',
+  saveRetry: 'RETRY SAVE (H)',
+  saveFailedStay: '화면을 닫지 않습니다 — 저장이 성공해야 나갈 수 있습니다',
+  storageTestHint: 'DIAGNOSTICS > STORAGE TEST > RUN STORAGE TEST',
+  paidBlocked: (detail: string): string => `PAID PLAY BLOCKED · ${detail}`,
+  noBootNotice: '없음',
 } as const;
 
 /** admin §4.2 푸터 — 현재 화면에서 유효한 조작만 */

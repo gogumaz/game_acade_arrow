@@ -97,6 +97,19 @@ export function parseRankingCsv(csv: string): RankingEntry[] {
   return out.sort(compareEntries).slice(0, RANKING_SIZE);
 }
 
+/**
+ * WU-06 P-1 · SAV-707 — `ranking.csv`를 신뢰할 수 있는가.
+ *
+ * 기준: **헤더 일치 + 파싱 실패 행 0**. 이 파서는 손상 행을 조용히 버리므로(§12.1) 절반이
+ * 깨진 파일도 "정상"으로 보이고, 그러면 `.bak`에 남아 있는 온전한 TOP 10이 영영 안 쓰인다.
+ * 헤더만 있는 빈 랭킹은 **유효**하다 — 랭킹 초기화 직후의 정상 상태다.
+ */
+export function isValidRankingCsv(csv: string): boolean {
+  const lines = csv.trim().split(/\r?\n/);
+  if (lines[0].trim() !== RANKING_HEADER) return false;
+  return lines.slice(1).every((line) => line.trim() === '' || parseRankingRow(line) !== null);
+}
+
 export class RankingStore {
   private entries: RankingEntry[] = [];
   private nextSeq = 1;
@@ -162,6 +175,9 @@ export class RankingStore {
       apply: (csv) => {
         this.apply(csv);
       },
+      // SAV-707 — 본 파일이 손상이면 `.bak`, 둘 다 손상이면 **빈 랭킹으로 시작**한다.
+      // 빈 랭킹은 `RankingStore`의 초기 상태 그대로라 별도 처리가 필요 없다
+      validate: (csv) => isValidRankingCsv(csv),
     };
   }
 }

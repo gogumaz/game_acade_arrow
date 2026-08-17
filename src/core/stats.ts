@@ -397,7 +397,9 @@ export class StatsModel {
     const openedAt = this.openedAtMs;
     this.openedAtMs = null;
     if (openedAt !== null) {
-      this.c.occupancyMsTotal += Math.max(0, atMs - openedAt);
+      // 이월 F-4 — 단조 시계는 `performance.now()`라 **소수점 밀리초**를 준다. 그대로 더하면
+      // 누계가 정수가 아니게 되고, CSV 왕복(`stats.csv`)에서 자릿수가 잘려 값이 흔들린다
+      this.c.occupancyMsTotal += Math.round(Math.max(0, atMs - openedAt));
       this.c.occupancySessions += 1;
     }
     const board = safeCount(o.boardReached);

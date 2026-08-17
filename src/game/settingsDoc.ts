@@ -17,6 +17,7 @@ import { FACTORY_ADMIN_PARAMS } from '../core/adminParams';
 import {
   FILES,
   SCHEMA_VERSION,
+  SETTINGS_HEADER,
   parseSettingsCsv,
   sanitizeField,
   settingsToCsv,
@@ -143,6 +144,18 @@ export class SettingsStore {
     this.current = parseSettingsDocCsv(csv);
   }
 
+  /**
+   * WU-06 P-1 — v1 머리행(`schema,soundVolume,coinsPerPlay,initialHearts`)이 읽히는가.
+   *
+   * `#machine` 섹션은 손상 관용(칸별 공장값 유지)이므로 판정에 넣지 않는다. 머리행조차
+   * 못 읽으면 파일 전체가 잘렸거나 다른 파일이라는 뜻이고, 그때만 `.bak`으로 넘어간다.
+   */
+  static validate(csv: string): boolean {
+    const first = csv.split(/\r?\n/)[0];
+    if (first.trim() !== SETTINGS_HEADER) return false;
+    return parseSettingsCsv(csv) !== null;
+  }
+
   asSaveDocument(): SaveDocument {
     return {
       file: FILES.settings,
@@ -150,6 +163,7 @@ export class SettingsStore {
       apply: (csv) => {
         this.apply(csv);
       },
+      validate: (csv) => SettingsStore.validate(csv),
     };
   }
 }

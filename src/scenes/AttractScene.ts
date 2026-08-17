@@ -5,7 +5,7 @@
 
 import type { FlowSnapshot } from '../game/flow';
 import { CSS, FONT_FAMILY, FONT_SIZE, LAYOUT } from '../game/render/boardView';
-import { TextPanel, attractPanel, readyPanel } from '../game/render/panels';
+import { TextPanel, attractPanel, paidBlockedLine, readyPanel } from '../game/render/panels';
 import { ArrowScene } from './ArrowScene';
 
 export class AttractScene extends ArrowScene {
@@ -29,11 +29,17 @@ export class AttractScene extends ArrowScene {
 
   protected paint(snap: FlowSnapshot): void {
     const price = this.app.credits.coinsPerPlay;
-    this.panel.set(snap.screen === 'READY' ? readyPanel(price) : attractPanel(snap, price));
+    // §12.4 — 차단 중이면 START 대신 사유를 낸다. 코인 적립은 그대로다 (P-5)
+    const blocked = paidBlockedLine(snap);
+    this.panel.set(
+      snap.screen === 'READY' ? readyPanel(price, blocked) : attractPanel(snap, price)
+    );
     this.footer.setText(
-      snap.screen === 'READY'
-        ? `CREDIT ${snap.credits.paid + snap.credits.event}`
-        : '코인을 넣어 주세요'
+      blocked !== null
+        ? blocked
+        : snap.screen === 'READY'
+          ? `CREDIT ${snap.credits.paid + snap.credits.event}`
+          : '코인을 넣어 주세요'
     );
   }
 }

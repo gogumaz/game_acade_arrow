@@ -18,6 +18,7 @@ import { FACTORY_PARAMS, type CoreParams } from '../core/params';
 import { StatsModel, type AuditEvent, type AuditSink, type WallClock } from '../core/stats';
 import type { Clock } from '../core/types';
 import { FILES } from '../persist/csv';
+import { cutoffIso, pruneLog } from '../persist/retention';
 import { browserEnvironment, Storage } from '../persist/storage';
 import { AdminController } from './admin/controller';
 import { AuditLogger } from './admin/audit';
@@ -28,9 +29,11 @@ import { fixtureBoardSource, type BoardRequest, type BoardSource } from './board
 import { CrashRecovery, type RecoveryResult } from './crashRecovery';
 import { CreditsService } from './creditsService';
 import { FlowMachine, type UiTimings } from './flow';
+import { readHealth, type HealthReport } from './health';
 import { keyboard, asPhaseSource } from './input';
 import type { InputAdapter } from './input';
 import { RankingStore } from './rankingStore';
+import { SafetyMonitor } from './safety';
 import { SettingsStore } from './settingsDoc';
 import { createSilentSfx, type Sfx } from './sfx';
 import { statsSaveDocument } from './statsDoc';
@@ -53,6 +56,8 @@ export interface AppContext {
   readonly admin: AdminController;
   readonly params: ParamsStore;
   readonly settings: SettingsStore;
+  /** §12.4 유료 차단 게이트 · §12.3 부팅 경고 (WU-06 P-5) */
+  readonly safety: SafetyMonitor;
   /** 부팅 순서(§4.4 · §10.6)가 끝날 때 resolve — 테스트·씬이 기다린다 */
   readonly ready: Promise<BootResult>;
   /** §11.6 관리자 테스트 플레이 — WU-05가 뒤집는다. 플래그 소유는 여기 1곳뿐이다 */
@@ -68,6 +73,10 @@ export interface BootResult {
   readonly restoredPaid: number;
   /** §10.6 크래시 복구 결과 */
   readonly recovery: RecoveryResult;
+  /** §12.3 — 메인 프로세스 상태. 브라우저 개발 모드는 null (WU-06 P-8) */
+  readonly health: HealthReport | null;
+  /** SAV-706 — 12개월 보존 정리로 지운 행 수 (파일별) */
+  readonly pruned: Readonly<Record<string, number>>;
 }
 
 export interface AppOptions {
@@ -178,6 +187,24 @@ export function createApp(options: AppOptions = {}): AppContext {
     onStatsChanged: () => storage.scheduleSave(),
   });
 
+  // §12.4 — 다섯 차단 조건을 한 곳에서 판정한다. `flow`에는 훅이 1개만 붙는다 (P-5)
+  const safety = new SafetyMonitor({
+    storage: {
+      get backendKind() {
+        return storage.backendKind;
+      },
+      get saveFailStreak() {
+        return storage.saveFailStreak;
+      },
+      bootOutcomeOf: (file) => storage.bootOutcomeOf(file),
+    },
+    credits: {
+      get blockReason() {
+        return credits.blockReason;
+      },
+    },
+  });
+
   const recovery = new CrashRecovery({
     stats,
     credits,
@@ -232,6 +259,10 @@ export function createApp(options: AppOptions = {}): AppContext {
     },
     adminInput: (action) => admin?.handle(action),
     adminIdleGuard: () => admin?.idleGuard() ?? true,
+    // §12.4 — 유료 시작 차단. 게이트 하나가 다섯 조건 전부를 대표한다 (P-5)
+    paidGate: safety,
+    // 이월 F-3 — 랭킹 날짜·`BEST TODAY`는 **로컬 날짜** 기준이다
+    localDate: () => wall.localDate(),
   });
 
   /** 저장 문서 2종을 합친 현재 라이브 값 */
@@ -290,6 +321,9 @@ export function createApp(options: AppOptions = {}): AppContext {
       flow.handle('SERVICE');
     },
     inputStatus: () => input.status,
+    // §12.3 · §12.4 — 부팅 경고·유료 차단 사유·STORAGE LOW의 유일한 출처 (WU-06 P-5 · P-8)
+    safety,
+    health: () => readHealth(storage),
     ...(options.system === undefined ? {} : { system: options.system }),
     testPlay: {
       start: (spec: TestPlaySpec, draft: AdminParams) => {
@@ -308,6 +342,29 @@ export function createApp(options: AppOptions = {}): AppContext {
     },
     runSnapshot: () => flow.snapshot().run,
   });
+
+  /**
+   * SAV-706 — `credit_log.csv`·`audit_log.csv`의 12개월 초과 행을 부팅 시 1회 걷어 낸다.
+   *
+   * 파일을 나누지 않는다(착수 Q2(a)) — WU-04 잔액 복원과 WU-05 감사 조회가 단일 파일을
+   * 전제하기 때문이다. **내용이 실제로 바뀐 파일만** 다시 쓴다.
+   */
+  async function pruneAppendLogs(): Promise<Record<string, number>> {
+    const cutoff = cutoffIso(nowIso());
+    const out: Record<string, number> = {};
+    for (const file of [FILES.creditLog, FILES.auditLog] as const) {
+      // FIX 사이클 1 (검증 F-3) — read-modify-write를 `rewriteLog()`로 감싼다. 정리 도중
+      // 들어온 append(부팅 중 코인 적립)는 버퍼에 쌓였다가 재기록 뒤 반영되므로 유실되지 않는다.
+      // 실패는 `rewriteLog`가 삼킨다 — 다음 부팅에 다시 시도한다
+      await storage.rewriteLog(file, (csv) => {
+        if (csv === null) return null;
+        const result = pruneLog(csv, cutoff);
+        out[file] = result.removed;
+        return result.changed ? result.next : null;
+      });
+    }
+    return out;
+  }
 
   /**
    * 부팅 순서 (§10.3 · §10.6 · P-9)
@@ -330,7 +387,12 @@ export function createApp(options: AppOptions = {}): AppContext {
     credits.noteBoot();
     credits.clearEventBalance('boot');
     const result = recovery.recoverOnBoot();
-    return { restoredPaid, recovery: result };
+    // §12.3 — 메인 프로세스 상태(치명 오류 창 · 디스크 여유 · machine.json). 가정 (라)
+    const health = await readHealth(storage);
+    safety.setHealth(health);
+    // SAV-706 — 12개월 초과 로그 정리는 **부팅 1회**다. 바뀐 파일만 다시 쓴다
+    const pruned = await pruneAppendLogs();
+    return { restoredPaid, recovery: result, health, pruned };
   })();
 
   const input = options.input ?? keyboard;
@@ -368,6 +430,7 @@ export function createApp(options: AppOptions = {}): AppContext {
     admin,
     params: paramsStore,
     settings: settingsStore,
+    safety,
     ready,
     setTestPlay(on: boolean): void {
       testPlay = on;
