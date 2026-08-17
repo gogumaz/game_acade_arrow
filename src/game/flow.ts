@@ -133,6 +133,8 @@ export interface FlowDeps {
   readonly isTestPlay?: () => boolean;
   /** §11.4 등급 임계 4행 — 관리자 편집값 (WU-05 Q-1). 기본은 공장 임계표 */
   readonly gradeThresholds?: () => GradeThresholds;
+  /** §5.5 — 최근 유료 세션 분포가 차면 상위 백분율, 차기 전에는 null. */
+  readonly scorePercentile?: (score: number) => number | null;
   /** §11.4 힌트 표시·쿨다운·이름 입력 시간 (WU-05 Q-1) */
   readonly uiTimings?: () => UiTimings;
   /**
@@ -185,6 +187,7 @@ export class FlowMachine {
   private readonly onSessionEnd: (o: RunOutcome) => void;
   private readonly isTestPlay: () => boolean;
   private readonly gradeThresholds: () => GradeThresholds;
+  private readonly scorePercentile: (score: number) => number | null;
   private readonly uiTimings: () => UiTimings;
   private readonly adminInput: ((action: InputAction) => void) | null;
   private readonly adminIdleGuard: () => boolean;
@@ -228,6 +231,7 @@ export class FlowMachine {
     this.onSessionEnd = deps.onSessionEnd ?? ((): void => undefined);
     this.isTestPlay = deps.isTestPlay ?? ((): boolean => false);
     this.gradeThresholds = deps.gradeThresholds ?? ((): GradeThresholds => GRADE_THRESHOLDS);
+    this.scorePercentile = deps.scorePercentile ?? ((): null => null);
     this.uiTimings = deps.uiTimings ?? ((): UiTimings => DEFAULT_UI_TIMINGS);
     this.adminInput = deps.adminInput ?? null;
     this.adminIdleGuard = deps.adminIdleGuard ?? ((): boolean => true);
@@ -746,7 +750,12 @@ export class FlowMachine {
     const score = run.displayScore;
     this.resultSummary = {
       score,
-      grade: gradeOf(score, this.bestPerfectStreak, this.gradeThresholds()),
+      grade: gradeOf(
+        score,
+        this.bestPerfectStreak,
+        this.gradeThresholds(),
+        this.scorePercentile(score)
+      ),
       maxComboCentis: run.maxComboCentis,
       boardReached: run.boardNumber,
       continues: run.continueCount,

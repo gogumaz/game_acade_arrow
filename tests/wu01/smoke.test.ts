@@ -118,7 +118,7 @@ describe('WU-01 스모크 ① 입력 어댑터 (§2.1 · §18.5)', () => {
     expect(actions).toEqual([{ player: 1, action: 'COIN' }]);
   });
 
-  it('방향 홀드는 250ms 후 100ms 간격으로 반복한다 (§2.3)', () => {
+  it('CTL-006 — 방향 홀드는 250ms 후 100ms 간격 반복하고 blur에서 멈춘다 (§2.3)', () => {
     const target = new SmokeKeyTarget();
     const adapter = new KeyboardInputAdapter({ target });
     adapter.attach();

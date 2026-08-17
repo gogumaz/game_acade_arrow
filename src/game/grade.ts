@@ -30,8 +30,16 @@ export type GradeThresholds = Readonly<Record<Exclude<Grade, 'C'>, number>>;
 export function gradeOf(
   score: number,
   perfectStreak = 0,
-  thresholds: GradeThresholds = GRADE_THRESHOLDS
+  thresholds: GradeThresholds = GRADE_THRESHOLDS,
+  topPercent: number | null = null
 ): Grade {
+  if (topPercent !== null) {
+    if (perfectStreak >= PERFECT_STREAK_FOR_S_PLUS || topPercent <= 3) return 'S+';
+    if (topPercent <= 10) return 'S';
+    if (topPercent <= 30) return 'A';
+    if (topPercent <= 60) return 'B';
+    return 'C';
+  }
   if (score >= thresholds['S+'] || perfectStreak >= PERFECT_STREAK_FOR_S_PLUS) return 'S+';
   if (score >= thresholds.S) return 'S';
   if (score >= thresholds.A) return 'A';

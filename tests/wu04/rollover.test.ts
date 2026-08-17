@@ -150,7 +150,7 @@ describe('CRD-605 — 롤오버가 0으로 만드는 것은 4종뿐이다', () =
   });
 });
 
-describe('admin §11.5 — CLOCK CHANGED 3형태 (Q-3)', () => {
+describe('ADM-303 — CLOCK CHANGED 3형태와 날짜 롤오버 (Q-3)', () => {
   it('① 24시간 이상 과거로 이동하면 날짜가 그대로여도 감지한다', () => {
     const rig = makeRig();
     rig.wall.setMs(rig.wall.nowMs() - CLOCK_BACKSTEP_MS - 1000);

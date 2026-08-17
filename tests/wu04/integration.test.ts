@@ -162,7 +162,7 @@ describe('CRD-602 — 상한과 거부 표시', () => {
   });
 });
 
-describe('CRD-603 — 혼합 결제 금지 (전 경로)', () => {
+describe('CRD-603 · ADM-103 — 혼합 결제 금지 (전 경로)', () => {
   it('이벤트로 전액을 낼 수 있으면 유료 잔액이 줄지 않는다', async () => {
     const rig = await boot({ coinsPerPlay: 2 });
     rig.app.credits.grantEvent(3);

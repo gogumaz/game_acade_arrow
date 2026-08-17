@@ -263,6 +263,7 @@ export function createApp(options: AppOptions = {}): AppContext {
       const g = (admin?.liveParams ?? live()).grade;
       return { 'S+': g.sPlus, S: g.s, A: g.a, B: g.b };
     },
+    scorePercentile: (score) => credits.scorePercentile(score),
     uiTimings: (): UiTimings => {
       const ui = (admin?.liveParams ?? live()).ui;
       return {

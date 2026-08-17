@@ -343,7 +343,7 @@ export class CreditsService implements CreditsPort {
     this.changed();
   }
 
-  /** §5.5 — 표본 200 미만이면 null(고정 임계표). 배선은 §16 이월 1 (P-10) */
+  /** §5.5 — 표본 200 미만이면 null(고정 임계표), 이상이면 결과 등급용 백분위. */
   scorePercentile(score: number): number | null {
     return this.stats.topPercentOf(score);
   }

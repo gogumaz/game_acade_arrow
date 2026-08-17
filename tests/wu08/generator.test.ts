@@ -20,7 +20,7 @@ import { realSolverGate } from '../../src/game/admin/solverGate';
 import { buildBoard, FIXTURE_DEADLOCK } from '../wu02/fixtures';
 
 describe('WU-08 procedural generator', () => {
-  it('fits every factory tier, remains monotonic, and saturates endless at 40', () => {
+  it('GEN-404 — every factory tier remains monotonic and endless saturates at 40', () => {
     let chains = 0;
     let depth = 0;
     for (let boardNumber = 1; boardNumber <= 20; boardNumber += 1) {
@@ -75,7 +75,7 @@ describe('WU-08 procedural generator', () => {
     expect(result.deadlockStates).toBe(1);
   });
 
-  it('applies adaptive decisions by one step and never changes score multiplier', () => {
+  it('GEN-408 — adaptive decisions move one step and never change score multiplier', () => {
     const adaptive = new AdaptiveDifficulty();
     expect(
       adaptive.record({ boardNumber: 1, elapsedMs: 4000, targetMs: 8000, mistakes: 0 }).delta
@@ -98,7 +98,7 @@ describe('WU-08 procedural generator', () => {
     });
   });
 
-  it('runs the bounded reseed, relaxation, and warmup recovery order', () => {
+  it('GEN-406 — bounded reseed, relaxation, and warmup recovery order', () => {
     const calls: number[] = [];
     const pipeline = new GenerationPipeline({
       attempt: (input) => {
@@ -178,7 +178,7 @@ describe('WU-08 procedural generator', () => {
     expect(result).not.toHaveProperty('pending');
   });
 
-  it('enumerates all seven release block conditions', () => {
+  it('GEN-407 — enumerates all seven release block conditions', () => {
     expect(
       releaseBlockReasons({
         hasSolution: false,
